@@ -1,0 +1,18 @@
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP", "W"]
+
+[tool.ruff.lint.isort]
+# Home Assistant's import layout.
+force-sort-within-sections = true
+known-first-party = ["custom_components"]
+known-third-party = ["pytest_homeassistant_custom_component"]
+section-order = ["future", "standard-library", "third-party", "homeassistant", "first-party", "local-folder"]
+combine-as-imports = true
+split-on-trailing-comma = false
+
+[tool.ruff.lint.isort.sections]
+homeassistant = ["homeassistant"]

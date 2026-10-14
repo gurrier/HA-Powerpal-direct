@@ -1,0 +1,99 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "description": "Choose your Powerpal. If it isn't listed, something else is probably connected to it (an ESP32 gateway or the Powerpal app): a connected Powerpal stops advertising. Disconnect that first.",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "pair": {
+        "title": "Pair with {name}",
+        "description": "Home Assistant will bond with the Powerpal over Bluetooth and authenticate with its pairing code. Make sure nothing else (an ESP32 gateway or the Powerpal app) is connected to it.",
+        "data": {
+          "pairing_code": "Pairing code",
+          "pulses_per_kwh": "Meter pulses per kWh"
+        },
+        "data_description": {
+          "pairing_code": "The 6-digit code on the card that came with your Powerpal, also shown in the Powerpal app.",
+          "pulses_per_kwh": "Printed on your meter as imp/kWh. Usually 1000."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter the pairing code",
+        "description": "{name} rejected its pairing code.",
+        "data": {
+          "pairing_code": "Pairing code"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Couldn't connect to the Powerpal. Move it or your Bluetooth adapter/proxy closer, and make sure nothing else is connected to it.",
+      "invalid_auth": "The Powerpal didn't accept the pairing code.",
+      "invalid_pairing_code": "The pairing code is 6 digits.",
+      "not_advertising": "The Powerpal isn't advertising, so something else is probably connected to it.",
+      "cannot_bond": "Couldn't bond with the Powerpal over Bluetooth. Bonding is most reliable through an ESPHome Bluetooth proxy (the same pairing an ESP32 gateway did). On a local adapter, a failed attempt can leave a stale record behind: remove the Powerpal from the host's Bluetooth before retrying."
+    },
+    "abort": {
+      "already_configured": "This Powerpal is already set up.",
+      "no_devices_found": "No Powerpal found. A Powerpal stops advertising while anything is connected to it, so turn off any ESP32 gateway and close the Powerpal app, then try again.",
+      "reauth_successful": "The pairing code was updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "pulses_per_kwh": "Meter pulses per kWh",
+          "poll_interval": "Catch-up interval",
+          "notification_interval": "Live reading interval"
+        },
+        "data_description": {
+          "pulses_per_kwh": "Changing this rescales the whole energy total, not just new readings.",
+          "poll_interval": "0 keeps Home Assistant connected for live readings. Any other value connects every that many minutes, fetches the readings stored since the last visit, and disconnects, freeing the Bluetooth connection slot in between. Power then updates only at each visit.",
+          "notification_interval": "When staying connected: minutes between live readings sent by the Powerpal. 1 is recommended."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "energy": {
+        "name": "Energy"
+      },
+      "daily_energy": {
+        "name": "Energy today"
+      },
+      "last_pulses": {
+        "name": "Pulses in last reading"
+      },
+      "last_reading": {
+        "name": "Last reading"
+      },
+      "history_oldest": {
+        "name": "Oldest stored reading"
+      },
+      "led_sensitivity": {
+        "name": "LED sensitivity"
+      },
+      "api_key": {
+        "name": "Cloud API key"
+      }
+    },
+    "button": {
+      "reconnect": {
+        "name": "Reconnect"
+      },
+      "set_time": {
+        "name": "Set clock to now"
+      }
+    }
+  },
+  "issues": {
+    "bond_failed": {
+      "title": "{name} can't bond over Bluetooth",
+      "description": "Home Assistant couldn't bond with {name}, and the Powerpal answers nothing until it's bonded. Error: {error}\n\nThe most reliable fix is to connect through an ESPHome Bluetooth proxy (`bluetooth_proxy: active: true`), which bonds the same way an ESP32 gateway did. If you're using a local adapter, also remove the Powerpal from the host's Bluetooth (`bluetoothctl remove <address>`), since a failed attempt can leave a stale record that blocks later connections. Retries happen every 30 minutes, or press Reconnect."
+    }
+  }
+}
