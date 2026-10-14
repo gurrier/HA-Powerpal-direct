@@ -99,6 +99,9 @@
       },
       "last_cloud_upload": {
         "name": "Last Cloud Upload"
+      },
+      "connected_via": {
+        "name": "Connected Via"
       }
     },
     "button": {

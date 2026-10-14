@@ -134,6 +134,12 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
         value_fn=lambda c: c.data.advertisement_rate,
     ),
     PowerpalSensorDescription(
+        key="connected_via",
+        translation_key="connected_via",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.data.connected_via,
+    ),
+    PowerpalSensorDescription(
         key="last_stall",
         translation_key="last_stall",
         entity_category=EntityCategory.DIAGNOSTIC,

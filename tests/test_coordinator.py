@@ -257,3 +257,36 @@ async def test_advertisements_while_free(hass: HomeAssistant, device: FakePowerp
     assert coordinator.data.advertisement_rate == 3
     coordinator._async_sample_advertisement_rate(dt_util.now())
     assert coordinator.data.advertisement_rate == 0
+
+
+async def test_connected_via_follows_the_slot_holding_the_connection(hass: HomeAssistant, device: FakePowerpal) -> None:
+    from types import SimpleNamespace
+
+    allocations = [SimpleNamespace(source="18:1D:EA:F5:66:6B", allocated=[ADDRESS.lower()])]
+    manager = MagicMock()
+    manager.async_current_allocations.side_effect = lambda: allocations
+    scanners = {
+        "18:1D:EA:F5:66:6B": SimpleNamespace(name="hci0 (18:1D:EA:F5:66:6B)"),
+        "24:EC:4A:B0:B2:0A": SimpleNamespace(name="athom-smart-plug-v3-dishwasher (24:EC:4A:B0:B2:0A)"),
+    }
+    coordinator = make_coordinator(hass)
+    with (
+        patch("custom_components.powerpal_direct.coordinator._bluetooth_manager", return_value=manager),
+        patch(
+            "custom_components.powerpal_direct.coordinator.bluetooth.async_scanner_by_source",
+            side_effect=lambda hass, source: scanners.get(source),
+        ),
+    ):
+        coordinator._set_connected(True)
+        assert coordinator.data.connected_via == "hci0 (18:1D:EA:F5:66:6B)"
+
+        # A proxy took it: its slot report arrives through the allocation callback.
+        allocations = [
+            SimpleNamespace(source="18:1D:EA:F5:66:6B", allocated=[]),
+            SimpleNamespace(source="24:EC:4A:B0:B2:0A", allocated=[ADDRESS]),
+        ]
+        coordinator._async_on_allocations(allocations[1])
+        assert coordinator.data.connected_via == "athom-smart-plug-v3-dishwasher (24:EC:4A:B0:B2:0A)"
+
+        coordinator._set_connected(False)
+        assert coordinator.data.connected_via is None

@@ -98,6 +98,8 @@ class PowerpalData:
     advertisement_rssi: int | None = None
     advertisement_rate: int | None = None
     last_stall: str | None = None
+    # The adapter or proxy holding the connection, e.g. "hci0 (18:1D:EA:F5:66:6B)".
+    connected_via: str | None = None
 
 
 class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
@@ -192,6 +194,8 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self.energy.state = EnergyState.from_dict(await self._store.async_load())
         await self._async_carry_on_from_gateway()
         await self.cloud.async_load()
+        if (manager := _bluetooth_manager()) is not None:
+            self._unsubs.append(manager.async_register_allocation_callback(self._async_on_allocations))
         self._unsubs.append(async_track_time_interval(self.hass, self._async_retry_cloud_upload, timedelta(minutes=5)))
         if self.energy.roll_day(dt_util.now().date()):
             self._save()
@@ -382,9 +386,37 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self.async_update_listeners()
 
     @callback
+    def _async_on_allocations(self, allocations: Any) -> None:
+        if self.data.connected and self._update_connected_via():
+            self.async_update_listeners()
+
+    @callback
+    def _update_connected_via(self) -> bool:
+        """Find which adapter or proxy holds our connection. Returns whether it changed.
+
+        Home Assistant tracks which device addresses hold a connection slot on each
+        adapter and proxy, which is the one public record of the path a connection took.
+        A proxy reports its slots a moment after connecting, hence the callback too.
+        """
+        via = None
+        if self.data.connected and (manager := _bluetooth_manager()) is not None:
+            for allocations in manager.async_current_allocations() or []:
+                if self.address.upper() in (address.upper() for address in allocations.allocated):
+                    scanner = bluetooth.async_scanner_by_source(self.hass, allocations.source)
+                    via = scanner.name if scanner is not None else allocations.source
+                    break
+        if via == self.data.connected_via:
+            return False
+        if via is not None and self.data.connected_via is not None:
+            _LOGGER.info("%s: Connection moved from %s to %s", self.address, self.data.connected_via, via)
+        self.data.connected_via = via
+        return True
+
+    @callback
     def _set_connected(self, connected: bool) -> None:
         if self.data.connected != connected:
             self.data.connected = connected
+            self._update_connected_via()
             self.async_update_listeners()
 
     async def _async_run(self) -> None:
@@ -703,3 +735,12 @@ def _describe_gap(seconds: float) -> str:
     if minutes < 120:
         return f"{minutes} min"
     return f"{minutes / 60:.1f} h"
+
+
+def _bluetooth_manager():
+    try:
+        from habluetooth import get_manager
+
+        return get_manager()
+    except Exception:
+        return None

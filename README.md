@@ -125,6 +125,7 @@ Named after the ESP32 gateway's entities, so they're familiar if you're moving f
 | Advertisement Rate | Advertisements heard per minute. Non-zero means the connection was down during that minute |
 | Last Stall | What happened the last time the connection was lost, how long the gap was, and how much was recovered from the Powerpal's history. Kept across restarts |
 | Connectivity | Whether Home Assistant currently holds the Powerpal's connection |
+| Connected Via | The Bluetooth adapter or proxy holding the connection, e.g. `hci0 (18:1D:EA:F5:66:6B)`. Its history shows whenever the connection moves between them. Each one bonds with the Powerpal separately, so frequent moves are worth avoiding |
 | Reconnect | Drops the connection and reconnects straight away |
 
 Disabled by default: **Oldest Stored Reading** (how far back the Powerpal's history goes)
