@@ -173,3 +173,15 @@ class HourlyEnergyStatistic:
                 for hour, total in rows
             ],
         )
+
+
+def async_clear_hourly_statistic(hass: HomeAssistant, address: str) -> None:
+    """Delete the hourly statistic, so re-adding the Powerpal starts it afresh.
+
+    Otherwise rows written before would mix with the ones the new entry writes.
+    """
+    if "recorder" not in hass.config.components:
+        return
+    from homeassistant.components.recorder import get_instance
+
+    get_instance(hass).async_clear_statistics([f"{DOMAIN}:energy_{address.lower().replace(':', '_')}"])

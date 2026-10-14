@@ -9,6 +9,7 @@ from homeassistant.helpers.storage import Store
 from .const import DOMAIN, STORAGE_VERSION
 from .coordinator import PowerpalConfigEntry, PowerpalCoordinator
 from .gateway import find_gateway_entities
+from .hourly import async_clear_hourly_statistic
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR, Platform.SWITCH]
 
@@ -36,6 +37,8 @@ async def async_remove_entry(hass: HomeAssistant, entry: PowerpalConfigEntry) ->
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.cloud").async_remove()
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.hourly").async_remove()
+    if entry.unique_id:
+        async_clear_hourly_statistic(hass, entry.unique_id)
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: PowerpalConfigEntry) -> None:

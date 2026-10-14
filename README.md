@@ -204,8 +204,18 @@ Things to know:
 
 Powerpal Direct also writes a long-term statistic, **Powerpal … Energy (hourly)**, that
 books every reading to the hour it was measured in. Readings recovered after an outage go
-back into the hours they belong to, rather than the hour they arrived. Choose it as the
-electricity source in Settings → Dashboards → Energy, in place of the Total Energy sensor.
+back into the hours they belong to, rather than the hour they arrived.
+
+Which to use as the grid consumption source in Settings → Dashboards → Energy:
+
+- **Total Energy (the sensor)**, if the Energy dashboard calculates your costs from a price
+  entity or a fixed price. Home Assistant only works out costs that way for an entity, and
+  the hourly statistic isn't one: with it, costs would silently stop. In normal running,
+  readings arrive within a minute or so of being measured, so the sensor's hours are only
+  off around an outage.
+- **The hourly statistic**, if you don't track costs in the Energy dashboard, or want the
+  hours exact after outages above all else. It also appears in statistics graph cards,
+  whichever you choose.
 
 - When it's first created, it copies the hourly history the Total Energy sensor already
   has, so switching the Energy dashboard over leaves no gap. After taking over from an

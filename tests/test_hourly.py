@@ -120,3 +120,16 @@ async def test_seeded_from_the_energy_sensors_history(hass: HomeAssistant) -> No
     # Seeding only happens once.
     await statistic.async_seed(sensor)
     assert statistic.ledger.baseline_kwh == 5001.25
+
+
+async def test_removing_the_entry_clears_the_statistic(hass: HomeAssistant) -> None:
+    from custom_components.powerpal_direct.hourly import async_clear_hourly_statistic
+
+    statistic = HourlyEnergyStatistic(hass, "entry", "DF:5C:55:00:00:01", "Powerpal 00002ba7")
+    await statistic.async_seed(None)
+    statistic.add(H0 + 60, 400)
+    statistic.flush(1000)
+    assert await _hourly_sums(hass, statistic.statistic_id)
+
+    async_clear_hourly_statistic(hass, "DF:5C:55:00:00:01")
+    assert await _hourly_sums(hass, statistic.statistic_id) == []
