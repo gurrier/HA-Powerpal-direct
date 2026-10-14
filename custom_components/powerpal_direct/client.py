@@ -14,6 +14,7 @@ from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 from . import protocol
+from .bluez_agent import pairing_agent
 from .protocol import HistoryRange, Measurement
 
 _LOGGER = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ class PowerpalClient:
         disconnected_callback: Callable[[], None] | None = None,
     ) -> None:
         self._ble_device = ble_device
+        self._pairing_code = pairing_code
         self._pairing_payload = protocol.encode_pairing_code(pairing_code)
         self._ble_device_callback = ble_device_callback
         self._disconnected_callback = disconnected_callback
@@ -108,14 +110,15 @@ class PowerpalClient:
                 self._disconnected_callback()
 
         try:
-            self._client = await establish_connection(
-                BleakClientWithServiceCache,
-                self._ble_device,
-                self._ble_device.name or self._ble_device.address,
-                disconnected_callback=_on_disconnect,
-                ble_device_callback=self._ble_device_callback,
-                pair=True,
-            )
+            async with pairing_agent(self._ble_device.address, self._pairing_code):
+                self._client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    self._ble_device,
+                    self._ble_device.name or self._ble_device.address,
+                    disconnected_callback=_on_disconnect,
+                    ble_device_callback=self._ble_device_callback,
+                    pair=True,
+                )
         except NotImplementedError as err:
             # An ESPHome Bluetooth proxy on firmware too old to pair.
             raise PowerpalBondError(str(err)) from err
@@ -132,11 +135,11 @@ class PowerpalClient:
                 _LOGGER.debug("%s: Error disconnecting: %s", self._ble_device.address, err)
 
     async def authenticate(self) -> str:
-        """Write the pairing code, and return the API key read back as proof it took.
+        """Write the pairing code, and return the API key read back afterwards.
 
-        The code is written without response, as the reference implementation does: a
-        write with response on a link that still needs bonding can make some hosts
-        start a pairing ceremony mid-write, and fail the write.
+        The API key reads back whether or not the code took, so it only proves the link
+        is bonded. A Powerpal that ignored the code shows it differently: protected
+        values read as zeros, and no readings arrive.
         """
         try:
             return await self._try_authenticate()
@@ -146,7 +149,10 @@ class PowerpalClient:
             _LOGGER.debug("%s: Pairing code not accepted (%s); bonding and retrying", self._ble_device.address, err)
         client = self._require_client()
         try:
-            async with asyncio.timeout(GATT_TIMEOUT_S * 2):
+            async with (
+                pairing_agent(self._ble_device.address, self._pairing_code),
+                asyncio.timeout(GATT_TIMEOUT_S * 2),
+            ):
                 await client.pair()
         except (BleakError, NotImplementedError) as err:
             raise PowerpalBondError(f"Bonding failed: {err}") from err
@@ -158,15 +164,40 @@ class PowerpalClient:
             raise PowerpalAuthError(f"Pairing code not accepted: {err}") from err
 
     async def _try_authenticate(self) -> str:
-        client = self._require_client()
-        async with asyncio.timeout(GATT_TIMEOUT_S):
-            await client.write_gatt_char(protocol.CHAR_PAIRING_CODE, self._pairing_payload, response=False)
+        await self._write_pairing_code()
         await asyncio.sleep(AUTH_SETTLE_S)
         raw = await self._read(protocol.CHAR_API_KEY)
         try:
             return protocol.decode_api_key(raw)
         except protocol.PowerpalProtocolError as err:
             raise PowerpalAuthError(f"Unexpected reply checking the pairing code: {err}") from err
+
+    async def _write_pairing_code(self) -> None:
+        """Write the code with response, as the ESP32 gateway does.
+
+        The characteristic doesn't support write-without-response, so BlueZ's write
+        command is silently discarded by the Powerpal (seen on a real one: no error, but
+        nothing unlocked). Windows appears to turn it into a write request, which is why
+        the reference scripts got away with it. Without response is kept only as a
+        fallback for a host that can't do the request.
+        """
+        client = self._require_client()
+        try:
+            async with asyncio.timeout(GATT_TIMEOUT_S):
+                await client.write_gatt_char(protocol.CHAR_PAIRING_CODE, self._pairing_payload, response=True)
+            return
+        except BleakError as err:
+            if is_bond_failure(err):
+                raise
+            _LOGGER.debug("%s: Pairing code write request failed (%s); trying a write command", self.address, err)
+        except TimeoutError:
+            _LOGGER.debug("%s: Pairing code write request timed out; trying a write command", self.address)
+        async with asyncio.timeout(GATT_TIMEOUT_S):
+            await client.write_gatt_char(protocol.CHAR_PAIRING_CODE, self._pairing_payload, response=False)
+
+    @property
+    def address(self) -> str:
+        return self._ble_device.address
 
     async def _read(self, char: str) -> bytes:
         client = self._require_client()

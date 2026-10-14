@@ -74,3 +74,7 @@ def test_state_round_trips() -> None:
     state = EnergyState(total_pulses=1, daily_pulses=2, daily_date="2026-10-14", watermark=3)
     assert EnergyState.from_dict(state.as_dict()) == state
     assert EnergyState.from_dict(None) == EnergyState()
+
+
+def test_a_saved_zero_watermark_means_none() -> None:
+    assert EnergyState.from_dict({"total_pulses": 0, "watermark": 0}).watermark is None

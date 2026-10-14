@@ -47,12 +47,14 @@
         "data": {
           "pulses_per_kwh": "Meter pulses per kWh",
           "poll_interval": "Catch-up interval",
-          "notification_interval": "Live reading interval"
+          "notification_interval": "Live reading interval",
+          "cost_per_kwh": "Cost per kWh"
         },
         "data_description": {
           "pulses_per_kwh": "Changing this rescales the whole energy total, not just new readings.",
           "poll_interval": "0 keeps Home Assistant connected for live readings. Any other value connects every that many minutes, fetches the readings stored since the last visit, and disconnects, freeing the Bluetooth connection slot in between. Power then updates only at each visit.",
-          "notification_interval": "When staying connected: minutes between live readings sent by the Powerpal. 1 is recommended."
+          "notification_interval": "When staying connected: minutes between live readings sent by the Powerpal. 1 is recommended.",
+          "cost_per_kwh": "Flat rate used by the Cost in last reading sensor, in your Home Assistant currency. 0 if you don't need it."
         }
       }
     }
@@ -79,6 +81,12 @@
       },
       "api_key": {
         "name": "Cloud API key"
+      },
+      "last_watt_hours": {
+        "name": "Watt hours in last reading"
+      },
+      "last_cost": {
+        "name": "Cost in last reading"
       }
     },
     "button": {
@@ -87,6 +95,11 @@
       },
       "set_time": {
         "name": "Set clock to now"
+      }
+    },
+    "switch": {
+      "connection": {
+        "name": "Connection"
       }
     }
   },

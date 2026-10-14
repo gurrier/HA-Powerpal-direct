@@ -19,9 +19,8 @@ the history protocol worked out in
 - Its **6-digit pairing code**. It's on the card that came with the Powerpal, and in the
   Powerpal app.
 - Your meter's pulse rate, printed on the meter as **imp/kWh** (usually 1000).
-- Bluetooth in range of the Powerpal. **An ESPHome Bluetooth proxy with `active: true` is
-  recommended** (see [Bonding](#bonding) for why). A local adapter on the Home Assistant
-  host may also work.
+- Bluetooth in range of the Powerpal: the Home Assistant host's own adapter, or an ESPHome
+  Bluetooth proxy with `active: true`. Both can bond (see [Bonding](#bonding)).
 
 **Turn off the ESP32 gateway first** (and close the Powerpal app). The Powerpal accepts one
 connection at a time and stops advertising while anything holds it, so Home Assistant
@@ -66,13 +65,25 @@ bond requested *with* man-in-the-middle protection, even though Just Works can't
 it. On Windows the plain "Encryption" level is refused and only "EncryptionAndAuthentication"
 works. Hosts differ in what they ask for:
 
+- **Local adapter (BlueZ):** with no pairing agent registered, BlueZ asks for a bond
+  without MITM protection, and the Powerpal fails the pairing with `AuthenticationFailed`.
+  That's why earlier direct integrations never got past bonding. While it connects, this
+  integration registers a pairing agent with a display-and-keyboard capability, which makes
+  BlueZ ask for MITM protection. The pairing is still Just Works, and the agent only
+  answers for the Powerpal being connected. Verified on a real Powerpal (firmware
+  `1.0.4_3`) through a Home Assistant OS host's Intel adapter: without the agent it failed
+  every time, with it it bonded first time.
 - **ESPHome Bluetooth proxy:** pairs using the ESP32's own Bluetooth stack and settings,
-  the same ones the ESP32 gateway bonded with. This is the path most likely to work.
-- **Local adapter (BlueZ):** Home Assistant pairs without a pairing agent, so BlueZ
-  requests a bond with no protection, which the Powerpal may refuse. There are reports of
-  BlueZ pairing failing with `AuthenticationFailed`, and of the failed attempt leaving a
-  record that blocks later connections until it's removed with
-  `bluetoothctl remove <address>`.
+  the same ones the ESP32 gateway bonded with. Not yet verified through this integration.
+
+Two things the Powerpal needs after bonding, both done automatically, as the ESP32 gateway
+did:
+
+- **The pairing code is written with a write request.** The characteristic doesn't accept
+  write commands, and on BlueZ a write command is silently ignored.
+- **The clock is set.** On first bonding with Home Assistant, the Powerpal was seen to clear
+  its clock, its stored history and its reading interval. It then sent no readings until
+  its clock was set. The integration sets the clock on every connect and every 6 hours.
 
 ### Choosing a proxy
 
@@ -100,10 +111,17 @@ tries again every 30 minutes, or when you press **Reconnect**.
 | Battery | Powerpal battery level |
 | Connectivity | Whether Home Assistant currently holds the Powerpal's connection |
 | Last reading | Time of the newest reading counted, from the Powerpal's own clock |
+| Pulses in last reading | Meter pulses counted in the latest one-minute reading |
+| Watt hours in last reading | Energy in the latest reading, in whole Wh |
+| Cost in last reading | That energy at your **Cost per kWh** option (0 unless set) |
 | LED sensitivity | The Powerpal's LED sensor sensitivity (1-14, default 9) |
+| Connection | Turn off to release the Powerpal (e.g. so the phone app can connect). It stays released until turned back on, or Home Assistant restarts |
 | Reconnect | Drops the connection and reconnects straight away |
 
-Disabled by default: **Pulses in last reading**, **Oldest stored reading** (how far back
+The three "last reading" sensors match the ESP32 gateway's Pulses, Watt Hours and Cost, so
+anything built on those (such as uploading readings to Powerpal's cloud) carries over.
+
+Disabled by default: **Oldest stored reading** (how far back
 the Powerpal's history goes), **Cloud API key** (for Powerpal's cloud API, together with
 the device's serial number, shown on the device page) and **Set clock to now**.
 
@@ -114,6 +132,7 @@ the device's serial number, shown on the device page) and **Set clock to now**.
 | Meter pulses per kWh | 1000 | Changing it rescales the whole total, not just new readings |
 | Catch-up interval | 0 | `0` stays connected for live readings, as the ESP32 gateway did. Any other value connects every that many minutes, fetches the readings stored since the last visit, and disconnects. Power then only updates at each visit, but the Bluetooth connection slot is free in between |
 | Live reading interval | 1 | When staying connected: minutes between the Powerpal's live readings |
+| Cost per kWh | 0 | Flat rate for the **Cost in last reading** sensor |
 
 ## How it works
 
@@ -142,10 +161,12 @@ they were measured on, so history replayed after midnight lands in yesterday, no
 - **An outage longer than the Powerpal's stored history loses the oldest minutes.** The
   log says how many. How much the Powerpal keeps isn't known yet; it's been seen holding
   over 12 hours.
-- **Set clock to now** is off by default. The Powerpal keeps good time on its own, and
-  moving its clock shifts the timestamps that catch-up relies on. Use it only if the
-  clock is clearly wrong, e.g. after a battery change. Note that reading `59DA0004` back
-  doesn't tell you the time: it returns the last value written, not a running clock.
+- **Bonding a new host may reset the Powerpal.** When Home Assistant first bonded, the
+  Powerpal's stored history was empty and its clock unset. Expect to lose any readings it
+  held from before. If your phone app has trouble afterwards, pair the phone again.
+- **The clock is set automatically**, on every connect and every 6 hours, as the ESP32
+  gateway did. **Set clock to now** (off by default) does the same on demand. Reading
+  `59DA0004` back doesn't tell you the time: it returns the last value written.
 - Nothing ever writes to the Nordic DFU service (`0xFE59`), which is the firmware update
   path.
 

@@ -14,6 +14,7 @@ from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.powerpal_direct.client import DeviceIdentity, PowerpalAuthError, PowerpalBondError
 from custom_components.powerpal_direct.const import (
+    CONF_COST_PER_KWH,
     CONF_NOTIFICATION_INTERVAL,
     CONF_PAIRING_CODE,
     CONF_POLL_INTERVAL,
@@ -64,6 +65,7 @@ async def test_bluetooth_discovery(hass: HomeAssistant, validate: AsyncMock) -> 
         CONF_PULSES_PER_KWH: 800.0,
         CONF_NOTIFICATION_INTERVAL: 1,
         CONF_POLL_INTERVAL: 0,
+        CONF_COST_PER_KWH: 0.0,
     }
     assert validate.call_args.args[1] == 123123
 
@@ -153,7 +155,13 @@ async def test_options(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_PULSES_PER_KWH: 800, CONF_NOTIFICATION_INTERVAL: 1, CONF_POLL_INTERVAL: 15}
+        result["flow_id"],
+        {CONF_PULSES_PER_KWH: 800, CONF_NOTIFICATION_INTERVAL: 1, CONF_POLL_INTERVAL: 15, CONF_COST_PER_KWH: 0.25},
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options == {CONF_PULSES_PER_KWH: 800.0, CONF_NOTIFICATION_INTERVAL: 1, CONF_POLL_INTERVAL: 15}
+    assert entry.options == {
+        CONF_PULSES_PER_KWH: 800.0,
+        CONF_NOTIFICATION_INTERVAL: 1,
+        CONF_POLL_INTERVAL: 15,
+        CONF_COST_PER_KWH: 0.25,
+    }

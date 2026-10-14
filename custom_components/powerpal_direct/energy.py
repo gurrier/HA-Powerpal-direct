@@ -44,7 +44,8 @@ class EnergyState:
             total_pulses=int(data.get("total_pulses", 0)),
             daily_pulses=int(data.get("daily_pulses", 0)),
             daily_date=data.get("daily_date"),
-            watermark=data.get("watermark"),
+            # 0 was saved by 0.1.0 when the Powerpal reported an empty history; it means none.
+            watermark=data.get("watermark") or None,
         )
 
 

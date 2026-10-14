@@ -22,7 +22,7 @@ from custom_components.powerpal_direct.const import (
 )
 from custom_components.powerpal_direct.coordinator import PowerpalCoordinator
 from custom_components.powerpal_direct.energy import EnergyState
-from custom_components.powerpal_direct.protocol import Measurement
+from custom_components.powerpal_direct.protocol import HistoryRange, Measurement
 
 from .fakes import ADDRESS, BLE_DEVICE, PAIRING_CODE, T0, FakeClient, FakePowerpal
 
@@ -184,3 +184,33 @@ async def test_run_loop_raises_repair_issue_when_bonding_fails(hass: HomeAssista
     coordinator.energy.state = EnergyState(watermark=device.history_range.newest)
     await coordinator._async_session(BLE_DEVICE)
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_empty_history_lets_the_first_live_reading_start_the_count(
+    hass: HomeAssistant, device: FakePowerpal
+) -> None:
+    # A Powerpal that has just reset reports (0, 0) for its stored range.
+    device.records.clear()
+    with patch.object(FakePowerpal, "history_range", HistoryRange(oldest=0, newest=0)):
+        coordinator = make_coordinator(hass)
+        session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+        await asyncio.sleep(0.05)
+        assert coordinator.energy.watermark is None
+        assert coordinator.data.history_oldest is None
+
+        device.client.notify(Measurement(T0, 4))
+        device.client.notify(Measurement(T0 + 60, 5))
+        await device.client.disconnect()
+        await asyncio.wait_for(session, 1)
+
+    assert device.history_requests == []
+    assert coordinator.energy.state.total_pulses == 9
+    assert coordinator.energy.watermark == T0 + 60
+
+
+async def test_sets_the_clock_on_every_connect(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass, poll_interval=15)
+    with patch("custom_components.powerpal_direct.coordinator.time.time", return_value=1_791_000_123.6):
+        await coordinator._async_session(BLE_DEVICE)
+        await coordinator._async_session(BLE_DEVICE)
+    assert device.clock_writes == [1_791_000_123, 1_791_000_123]

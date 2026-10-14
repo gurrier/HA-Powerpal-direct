@@ -24,10 +24,12 @@ from homeassistant.util import dt as dt_util
 
 from .client import DeviceIdentity, PowerpalAuthError, PowerpalBondError, PowerpalClient
 from .const import (
+    CONF_COST_PER_KWH,
     CONF_NOTIFICATION_INTERVAL,
     CONF_PAIRING_CODE,
     CONF_POLL_INTERVAL,
     CONF_PULSES_PER_KWH,
+    DEFAULT_COST_PER_KWH,
     DEFAULT_NOTIFICATION_INTERVAL,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_PULSES_PER_KWH,
@@ -51,6 +53,9 @@ ADVERTISEMENT_WAIT_S = 300
 # reading is treated as dead and reconnected. Catch-up then fills the gap.
 STALE_GRACE_S = 150
 BATTERY_REFRESH_S = 3600
+# The Powerpal sends no readings until its clock is set, and a new bond can clear it. The
+# ESP32 gateway set it on connect and every 6 hours, and so does this.
+CLOCK_SYNC_S = 6 * 3600
 # Beyond this, averaging pulses over the gap wouldn't say anything about current power.
 MAX_POWER_INTERVAL_S = 300
 # History replies arrive at 20-70 records/s; give up on a burst that goes quiet this long.
@@ -101,6 +106,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self.pulses_per_kwh: float = entry.options.get(CONF_PULSES_PER_KWH, DEFAULT_PULSES_PER_KWH)
         self.batch_minutes: int = entry.options.get(CONF_NOTIFICATION_INTERVAL, DEFAULT_NOTIFICATION_INTERVAL)
         self.poll_minutes: int = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+        self.cost_per_kwh: float = entry.options.get(CONF_COST_PER_KWH, DEFAULT_COST_PER_KWH)
 
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self.energy = EnergyAccumulator(EnergyState(), dt_util.get_default_time_zone())
@@ -121,6 +127,9 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._last_record_arrival: float | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._stopping = False
+        # Off releases the Powerpal (e.g. for the phone app) until switched back on. Like the
+        # gateway's connection switch, it's back on after a restart.
+        self.connection_enabled = True
         self._warned_passive_only = False
 
     @property
@@ -140,6 +149,19 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     @property
     def daily_kwh(self) -> float:
         return self.energy.state.daily_pulses / self.pulses_per_kwh
+
+    @property
+    def last_watt_hours(self) -> int | None:
+        """Energy in the latest reading, rounded to whole Wh as the gateway did."""
+        if self.data.last_pulses is None:
+            return None
+        return round(self.data.last_pulses / self.pulses_per_kwh * 1000)
+
+    @property
+    def last_cost(self) -> float | None:
+        if self.data.last_pulses is None:
+            return None
+        return round(self.data.last_pulses / self.pulses_per_kwh * self.cost_per_kwh, 6)
 
     @property
     def power_available(self) -> bool:
@@ -177,6 +199,14 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             await self._client.disconnect()
         await self._store.async_save(self.energy.state.as_dict())
 
+    async def async_set_connection_enabled(self, enabled: bool) -> None:
+        """Hold the Powerpal's connection, or let go of it and stay away."""
+        self.connection_enabled = enabled
+        self._wake.set()
+        if not enabled and self._client is not None:
+            await self._client.disconnect()
+        self.async_update_listeners()
+
     async def async_reconnect(self) -> None:
         """Drop the connection (if any) and connect again now."""
         self._wake.set()
@@ -211,16 +241,14 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     @callback
     def _update_device_registry(self, identity: DeviceIdentity) -> None:
         registry = dr.async_get(self.hass)
-        device = registry.async_get_device(connections={(dr.CONNECTION_BLUETOOTH, self.address)})
-        if device is None:
-            return
-        registry.async_update_device(
-            device.id,
-            serial_number=identity.device_id,
-            model=identity.model,
-            sw_version=identity.firmware,
-            hw_version=identity.hardware,
-        )
+        for device in dr.async_entries_for_config_entry(registry, self.config_entry.entry_id):
+            registry.async_update_device(
+                device.id,
+                serial_number=identity.device_id,
+                model=identity.model,
+                sw_version=identity.firmware,
+                hw_version=identity.hardware,
+            )
 
     @property
     def _bond_issue_id(self) -> str:
@@ -251,6 +279,11 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     async def _async_run(self) -> None:
         retry_s = RETRY_MIN_S
         while not self._stopping:
+            if not self.connection_enabled:
+                self._set_connected(False)
+                await self._wake.wait()
+                self._wake.clear()
+                continue
             ble_device = bluetooth.async_ble_device_from_address(self.hass, self.address, connectable=True)
             if ble_device is None:
                 self._set_connected(False)
@@ -338,15 +371,19 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._client = client
         await client.connect()
         _LOGGER.debug("%s: Connected", self.address)
+        # The same order as the ESP32 gateway (esphome-powerpal_ble), which is proven to
+        # hold a stable connection: pairing code, reading interval, subscribe, then reads.
         api_key = await client.authenticate()
         ir.async_delete_issue(self.hass, DOMAIN, self._bond_issue_id)
+        await client.set_time(int(time.time()))
+        last_clock_sync = time.monotonic()
+        if self.persistent:
+            await client.ensure_reading_batch_size(self.batch_minutes)
+        await client.subscribe(self._on_measurement, self._on_battery)
         self.data.identity = await client.read_identity(api_key)
         self._update_device_registry(self.data.identity)
         self.data.battery = await client.read_battery()
         self.data.led_sensitivity = await client.read_led_sensitivity()
-        await client.subscribe(self._on_measurement, self._on_battery)
-        if self.persistent:
-            await client.ensure_reading_batch_size(self.batch_minutes)
         self._set_connected(True)
         self.async_update_listeners()
         # Staleness is judged per connection; catch-up covers whatever came before.
@@ -369,6 +406,9 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             if self._last_record_arrival is not None and time.monotonic() - self._last_record_arrival > stale_after:
                 _LOGGER.warning("%s: No reading for over %s s; reconnecting to recover", self.address, stale_after)
                 return
+            if time.monotonic() - last_clock_sync > CLOCK_SYNC_S:
+                last_clock_sync = time.monotonic()
+                await client.set_time(int(time.time()))
             if time.monotonic() - last_battery > BATTERY_REFRESH_S:
                 last_battery = time.monotonic()
                 if (battery := await client.read_battery()) is not None:
@@ -383,6 +423,14 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         outage needs no special handling beyond noting what was lost.
         """
         history = await client.read_history_range()
+        if history.newest == 0:
+            # Nothing stored, as just after the Powerpal resets. Live readings still arrive,
+            # and the first one starts the count.
+            _LOGGER.debug("%s: The Powerpal holds no stored readings", self.address)
+            self.data.history_oldest = None
+            self._history_window = None
+            self._flush_pending_live()
+            return
         self.data.history_oldest = dt_util.utc_from_timestamp(history.oldest)
         watermark = self.energy.watermark
         if watermark is None:
@@ -402,8 +450,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         start, end = window
         if start > end:
             self._history_window = None
-            live, self._pending_live = sorted(self._pending_live, key=lambda m: m.timestamp), []
-            self._count(live)
+            self._flush_pending_live()
             return
         unrecoverable = max(0, (history.oldest - start) // RECORD_INTERVAL_S)
         expected = max(0, (end - max(start, history.oldest)) // RECORD_INTERVAL_S + 1)
@@ -448,6 +495,11 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         )
         level = logging.INFO if len(records) >= expected else logging.WARNING
         _LOGGER.log(level, "%s: Caught up %s of %s stored readings", self.address, len(records), expected)
+
+    @callback
+    def _flush_pending_live(self) -> None:
+        live, self._pending_live = sorted(self._pending_live, key=lambda m: m.timestamp), []
+        self._count(live)
 
     @callback
     def _on_battery(self, level: int) -> None:

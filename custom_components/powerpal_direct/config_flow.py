@@ -19,10 +19,12 @@ from homeassistant.helpers import selector
 from . import protocol
 from .client import DeviceIdentity, PowerpalAuthError, PowerpalBondError, PowerpalClient
 from .const import (
+    CONF_COST_PER_KWH,
     CONF_NOTIFICATION_INTERVAL,
     CONF_PAIRING_CODE,
     CONF_POLL_INTERVAL,
     CONF_PULSES_PER_KWH,
+    DEFAULT_COST_PER_KWH,
     DEFAULT_NOTIFICATION_INTERVAL,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_PULSES_PER_KWH,
@@ -129,6 +131,7 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_PULSES_PER_KWH: float(user_input[CONF_PULSES_PER_KWH]),
                         CONF_NOTIFICATION_INTERVAL: DEFAULT_NOTIFICATION_INTERVAL,
                         CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
+                        CONF_COST_PER_KWH: DEFAULT_COST_PER_KWH,
                     },
                 )
 
@@ -201,6 +204,7 @@ class PowerpalOptionsFlow(OptionsFlow):
                     CONF_PULSES_PER_KWH: float(user_input[CONF_PULSES_PER_KWH]),
                     CONF_NOTIFICATION_INTERVAL: int(user_input[CONF_NOTIFICATION_INTERVAL]),
                     CONF_POLL_INTERVAL: int(user_input[CONF_POLL_INTERVAL]),
+                    CONF_COST_PER_KWH: float(user_input[CONF_COST_PER_KWH]),
                 }
             )
 
@@ -234,6 +238,11 @@ class PowerpalOptionsFlow(OptionsFlow):
                             unit_of_measurement="min",
                             mode=selector.NumberSelectorMode.BOX,
                         )
+                    ),
+                    vol.Required(
+                        CONF_COST_PER_KWH, default=options.get(CONF_COST_PER_KWH, DEFAULT_COST_PER_KWH)
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=0, max=100, step="any", mode=selector.NumberSelectorMode.BOX)
                     ),
                 }
             ),

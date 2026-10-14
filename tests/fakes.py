@@ -47,6 +47,7 @@ class FakePowerpal:
         self.records: dict[int, int] = dict(records or {})
         self.batch_size = 15
         self.history_requests: list[tuple[int, int]] = []
+        self.clock_writes: list[int] = []
         # Sent ahead of the history reply, as if a live reading crossed it in flight.
         self.live_during_history: list[Measurement] = []
         self.client: FakeClient | None = None
@@ -126,7 +127,7 @@ class FakeClient:
                 loop.call_soon(self.notify, Measurement(timestamp, self.device.records[timestamp]))
 
     async def set_time(self, timestamp: int) -> None:
-        pass
+        self.device.clock_writes.append(timestamp)
 
     def notify(self, measurement: Measurement) -> None:
         """Send a measurement notification, as the Powerpal does every reading."""

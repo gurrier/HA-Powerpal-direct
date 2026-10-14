@@ -53,9 +53,22 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
         key="last_pulses",
         translation_key="last_pulses",
         state_class=SensorStateClass.MEASUREMENT,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
         value_fn=lambda c: c.data.last_pulses,
+    ),
+    PowerpalSensorDescription(
+        key="last_watt_hours",
+        translation_key="last_watt_hours",
+        # Not the energy device class: that's for totals, and this is one reading's worth.
+        native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda c: c.last_watt_hours,
+    ),
+    PowerpalSensorDescription(
+        key="last_cost",
+        translation_key="last_cost",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=6,
+        value_fn=lambda c: c.last_cost,
     ),
     PowerpalSensorDescription(
         key="last_reading",
@@ -105,6 +118,11 @@ async def async_setup_entry(
 
 class PowerpalSensor(PowerpalEntity, SensorEntity):
     entity_description: PowerpalSensorDescription
+
+    def __init__(self, coordinator: PowerpalCoordinator, description: PowerpalSensorDescription) -> None:
+        super().__init__(coordinator, description)
+        if description.key == "last_cost":
+            self._attr_native_unit_of_measurement = coordinator.hass.config.currency
 
     @property
     def available(self) -> bool:

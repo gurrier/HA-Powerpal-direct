@@ -73,7 +73,7 @@ async def test_connects_with_pairing_and_writes_code_without_response(bleak_clie
 
     assert await client.authenticate() == API_KEY
     bleak_client.write_gatt_char.assert_awaited_once_with(
-        protocol.CHAR_PAIRING_CODE, bytes.fromhex("f3e00100"), response=False
+        protocol.CHAR_PAIRING_CODE, bytes.fromhex("f3e00100"), response=True
     )
     bleak_client.pair.assert_not_awaited()
 
@@ -122,3 +122,20 @@ async def test_wrong_code_on_a_bonded_link(bleak_client: MagicMock) -> None:
     await client.connect()
     with pytest.raises(PowerpalAuthError):
         await client.authenticate()
+
+
+async def test_falls_back_to_write_command_if_the_request_fails(bleak_client: MagicMock) -> None:
+    bleak_client.write_gatt_char.side_effect = [TimeoutError(), None]
+    client = PowerpalClient(BLE_DEVICE, PAIRING_CODE)
+    await client.connect()
+    assert await client.authenticate() == API_KEY
+    assert [c.kwargs["response"] for c in bleak_client.write_gatt_char.await_args_list] == [True, False]
+
+
+async def test_unbonded_write_request_leads_to_bonding(bleak_client: MagicMock) -> None:
+    bleak_client.write_gatt_char.side_effect = [INSUFFICIENT_AUTH, None]
+    client = PowerpalClient(BLE_DEVICE, PAIRING_CODE)
+    await client.connect()
+    assert await client.authenticate() == API_KEY
+    bleak_client.pair.assert_awaited_once()
+    assert [c.kwargs["response"] for c in bleak_client.write_gatt_char.await_args_list] == [True, True]
