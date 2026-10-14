@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -117,3 +118,36 @@ async def test_setup_streams_readings_into_entities(
         await hass.async_block_till_done()
 
     assert hass_storage[f"{DOMAIN}.{entry.entry_id}"]["data"]["total_pulses"] == 2028
+
+
+async def test_connection_switch_left_off_stays_off_after_restart(hass: HomeAssistant) -> None:
+    from pytest_homeassistant_custom_component.common import mock_restore_cache
+
+    from homeassistant.core import State
+
+    hass.config.components.add("bluetooth_adapters")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        title="Powerpal 00002ba7",
+        data={CONF_PAIRING_CODE: 123123},
+        options={CONF_PULSES_PER_KWH: 1000.0, CONF_NOTIFICATION_INTERVAL: 1, CONF_POLL_INTERVAL: 0},
+    )
+    entry.add_to_hass(hass)
+    mock_restore_cache(hass, [State("switch.powerpal_00002ba7_ble_connection", "off")])
+    device = FakePowerpal()
+    device.add_minutes(T0 - 600, 10)
+    with (
+        patch.object(FakeClient, "device", device, create=True),
+        patch("custom_components.powerpal_direct.coordinator.PowerpalClient", FakeClient),
+        patch("custom_components.powerpal_direct.coordinator.bluetooth") as bluetooth,
+    ):
+        bluetooth.async_ble_device_from_address.return_value = BLE_DEVICE
+        bluetooth.async_register_callback.return_value = MagicMock()
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        await asyncio.sleep(0.1)
+        assert hass.states.get("switch.powerpal_00002ba7_ble_connection").state == "off"
+        assert device.client is None  # never connected
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()

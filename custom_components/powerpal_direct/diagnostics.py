@@ -22,6 +22,11 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: Powerpa
         "data": async_redact_data(data, TO_REDACT),
         "energy": coordinator.energy.state.as_dict(),
         "power_available": coordinator.power_available,
+        "hourly_statistic": {
+            "statistic_id": coordinator.hourly.statistic_id,
+            "baseline_kwh": coordinator.hourly.ledger.baseline_kwh,
+            "hours_kept": len(coordinator.hourly.ledger.hours),
+        },
         "cloud_upload": {
             "enabled": coordinator.cloud.enabled,
             "pending": coordinator.cloud.pending,

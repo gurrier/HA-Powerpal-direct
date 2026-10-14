@@ -208,12 +208,60 @@ async def test_empty_history_lets_the_first_live_reading_start_the_count(
     assert coordinator.energy.watermark == T0 + 60
 
 
-async def test_sets_the_clock_on_every_connect(hass: HomeAssistant, device: FakePowerpal) -> None:
+async def test_clock_left_alone_when_the_powerpal_has_history(hass: HomeAssistant, device: FakePowerpal) -> None:
     coordinator = make_coordinator(hass, poll_interval=15)
-    with patch("custom_components.powerpal_direct.coordinator.time.time", return_value=1_791_000_123.6):
+    await coordinator._async_session(BLE_DEVICE)
+    assert device.clock_writes == []
+
+
+async def test_clock_set_on_connect_after_a_reset(hass: HomeAssistant, device: FakePowerpal) -> None:
+    device.records.clear()
+    with patch.object(FakePowerpal, "history_range", HistoryRange(oldest=0, newest=0)):
+        coordinator = make_coordinator(hass, poll_interval=15)
         await coordinator._async_session(BLE_DEVICE)
-        await coordinator._async_session(BLE_DEVICE)
-    assert device.clock_writes == [1_791_000_123, 1_791_000_123]
+    assert len(device.clock_writes) == 1
+
+
+async def test_clock_set_when_no_reading_arrives(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    coordinator.energy.state = EnergyState(watermark=device.history_range.newest)
+    with patch("custom_components.powerpal_direct.coordinator.CLOCK_NO_READING_GRACE_S", -59.9):
+        session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+        await until(lambda: coordinator.data.connected)
+        await asyncio.sleep(0.2)
+        coordinator._catch_up_requested.set()  # wakes the loop to check
+        await until(lambda: len(device.clock_writes) == 1)
+        await device.client.disconnect()
+        await asyncio.wait_for(session, 1)
+
+
+async def test_clock_corrected_only_when_it_drifts(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    newest = device.history_range.newest
+    coordinator.energy.state = EnergyState(watermark=newest)
+    session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+    await until(lambda: coordinator.data.connected)
+
+    # Readings arriving on time: about 60 s after their own timestamp.
+    with patch("custom_components.powerpal_direct.coordinator.time.time") as now:
+        for minute in range(1, 6):
+            now.return_value = newest + minute * 60 + 60 + 2
+            device.client.notify(Measurement(newest + minute * 60, 1))
+        assert coordinator.data.clock_offset == 2
+        assert not coordinator._clock_correction_due
+
+        # The Powerpal's clock falls 2 minutes behind.
+        for minute in range(6, 12):
+            now.return_value = newest + minute * 60 + 60 + 120
+            device.client.notify(Measurement(newest + minute * 60, 1))
+        assert coordinator.data.clock_offset == 120
+        assert coordinator._clock_correction_due
+
+    coordinator._catch_up_requested.set()
+    await until(lambda: len(device.clock_writes) == 1)
+    assert not coordinator._clock_correction_due
+    await device.client.disconnect()
+    await asyncio.wait_for(session, 1)
 
 
 async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, device: FakePowerpal) -> None:
@@ -288,3 +336,23 @@ async def test_connected_via_follows_the_slot_holding_the_connection(hass: HomeA
 
         coordinator._set_connected(False)
         assert coordinator.data.connected_via is None
+
+
+async def test_new_install_imports_stored_history_into_hourly_only(hass: HomeAssistant, device: FakePowerpal) -> None:
+    from custom_components.powerpal_direct.hourly import HourlyEnergyStatistic
+
+    written: list[list[tuple[int, float]]] = []
+    coordinator = make_coordinator(hass, poll_interval=15)
+    with (
+        patch.object(HourlyEnergyStatistic, "available", True),
+        patch.object(HourlyEnergyStatistic, "_write", lambda self, rows: written.append(rows)),
+    ):
+        await coordinator._async_session(BLE_DEVICE)
+
+    # The ten stored minutes (5 pulses each) went into the hourly statistic...
+    assert device.history_requests == [(T0 - 600, T0 - 60)]
+    assert sum(coordinator.hourly.ledger.hours.values()) == 50
+    assert written
+    # ...but the new total still starts from now.
+    assert coordinator.energy.state.total_pulses == 0
+    assert coordinator.energy.watermark == T0 - 60

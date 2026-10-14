@@ -102,6 +102,9 @@
       },
       "connected_via": {
         "name": "Connected Via"
+      },
+      "clock_offset": {
+        "name": "Clock Offset"
       }
     },
     "button": {

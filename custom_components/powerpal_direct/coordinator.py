@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
+import statistics
 import time
 from typing import Any
 
@@ -16,7 +18,7 @@ from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr, issue_registry as ir
+from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
 from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -39,6 +41,7 @@ from .const import (
 )
 from .energy import EnergyAccumulator, EnergyState
 from .gateway import GatewayEntities, async_last_gateway_readings
+from .hourly import HourlyEnergyStatistic
 from .protocol import RECORD_INTERVAL_S, Measurement, PowerpalProtocolError
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,9 +58,17 @@ ADVERTISEMENT_WAIT_S = 300
 # reading is treated as dead and reconnected. Catch-up then fills the gap.
 STALE_GRACE_S = 150
 BATTERY_REFRESH_S = 3600
-# The Powerpal sends no readings until its clock is set, and a new bond can clear it. The
-# ESP32 gateway set it on connect and every 6 hours, and so does this.
-CLOCK_SYNC_S = 6 * 3600
+# The Powerpal sends no readings until its clock is set, and a new bond can clear it. Rather
+# than set it blindly (the ESP32 gateway did every 6 hours), it's set when that's needed:
+# - on connect, when the Powerpal's history is empty, as it is after a reset;
+# - when a connection gets no reading this long past the reading interval;
+# - when the clock has drifted further than this from Home Assistant's, judged by when
+#   live readings arrive, but no more often than every CLOCK_MIN_INTERVAL_S.
+CLOCK_NO_READING_GRACE_S = 90
+CLOCK_DRIFT_LIMIT_S = 60
+CLOCK_MIN_INTERVAL_S = 6 * 3600
+CLOCK_OFFSET_SAMPLES = 10
+CLOCK_OFFSET_MIN_SAMPLES = 5
 # Beyond this, averaging pulses over the gap wouldn't say anything about current power.
 MAX_POWER_INTERVAL_S = 300
 # History replies arrive at 20-70 records/s; give up on a burst that goes quiet this long.
@@ -100,6 +111,8 @@ class PowerpalData:
     last_stall: str | None = None
     # The adapter or proxy holding the connection, e.g. "hci0 (18:1D:EA:F5:66:6B)".
     connected_via: str | None = None
+    # Seconds the Powerpal's clock is behind Home Assistant's (negative: ahead).
+    clock_offset: float | None = None
 
 
 class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
@@ -137,6 +150,10 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._stopping = False
         self.gateway = GatewayEntities(available={}, still_present={})
         self.cloud = CloudUploader(hass, entry.entry_id)
+        self.hourly = HourlyEnergyStatistic(hass, entry.entry_id, self.address, entry.title)
+        self._clock_offsets: deque[float] = deque(maxlen=CLOCK_OFFSET_SAMPLES)
+        self._clock_set_at: float | None = None
+        self._clock_correction_due = False
         self._ads_this_minute = 0
         # Why the last connection was lost, and when its last reading arrived (wall time),
         # reported as Last Stall once readings resume.
@@ -193,6 +210,10 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     async def async_start(self) -> None:
         self.energy.state = EnergyState.from_dict(await self._store.async_load())
         await self._async_carry_on_from_gateway()
+        await self.hourly.async_load()
+        await self.hourly.async_seed(
+            er.async_get(self.hass).async_get_entity_id("sensor", DOMAIN, f"{self.address}_energy")
+        )
         await self.cloud.async_load()
         if (manager := _bluetooth_manager()) is not None:
             self._unsubs.append(manager.async_register_allocation_callback(self._async_on_allocations))
@@ -246,7 +267,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         if self._client is None or not self._client.is_connected:
             raise HomeAssistantError("The Powerpal isn't connected right now")
         try:
-            await self._client.set_time(int(time.time()))
+            await self._async_set_clock(self._client, "requested")
         except (BleakError, TimeoutError) as err:
             raise HomeAssistantError(f"Couldn't set the Powerpal's clock: {err}") from err
 
@@ -519,8 +540,10 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         # hold a stable connection: pairing code, reading interval, subscribe, then reads.
         api_key = await client.authenticate()
         ir.async_delete_issue(self.hass, DOMAIN, self._bond_issue_id)
-        await client.set_time(int(time.time()))
-        last_clock_sync = time.monotonic()
+        clock_set_this_session = False
+        if (await client.read_history_range()).newest == 0:
+            await self._async_set_clock(client, "its history is empty, as after a reset")
+            clock_set_this_session = True
         if self.persistent:
             await client.ensure_reading_batch_size(self.batch_minutes)
         await client.subscribe(self._on_measurement, self._on_battery)
@@ -532,7 +555,9 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self.data.advertisement_rssi = None
         self.async_update_listeners()
         # Staleness is judged per connection; catch-up covers whatever came before.
-        self._last_record_arrival = time.monotonic()
+        connected_at = time.monotonic()
+        self._last_record_arrival = connected_at
+        self._clock_offsets.clear()
 
         await self._async_catch_up(client, None)
         self._report_recovered_stall()
@@ -553,9 +578,18 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
                 _LOGGER.warning("%s: No reading for over %s s; reconnecting to recover", self.address, stale_after)
                 self._drop_reason = "connected, but the Powerpal stopped sending readings"
                 return
-            if time.monotonic() - last_clock_sync > CLOCK_SYNC_S:
-                last_clock_sync = time.monotonic()
-                await client.set_time(int(time.time()))
+            silent_for = time.monotonic() - self._last_record_arrival
+            if (
+                not clock_set_this_session
+                and self._last_record_arrival == connected_at
+                and silent_for > self.batch_minutes * 60 + CLOCK_NO_READING_GRACE_S
+            ):
+                # No reading at all since connecting: an unset clock is the known cause.
+                await self._async_set_clock(client, f"no reading in {round(silent_for)} s since connecting")
+                clock_set_this_session = True
+            if self._clock_correction_due:
+                self._clock_correction_due = False
+                await self._async_set_clock(client, f"it had drifted {self.data.clock_offset:+.0f} s")
             if time.monotonic() - last_battery > BATTERY_REFRESH_S:
                 last_battery = time.monotonic()
                 if (battery := await client.read_battery()) is not None:
@@ -581,13 +615,23 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self.data.history_oldest = dt_util.utc_from_timestamp(history.oldest)
         watermark = self.energy.watermark
         if watermark is None:
-            # First connection ever: start counting from now, rather than importing however
-            # much history the Powerpal happens to hold into a brand new total.
+            # First connection ever: the total starts from now, rather than taking in however
+            # much history the Powerpal happens to hold. On a brand new install that history
+            # still goes into the hourly statistic, so the Energy dashboard shows it.
+            if self.hourly.available and not self.hourly.ledger.hours and not self.hourly.ledger.baseline_kwh:
+                imported = await self._async_fetch_history(client, history.oldest, history.newest)
+                for measurement in imported:
+                    self.hourly.add(measurement.timestamp, measurement.pulses)
+                self.hourly.flush(self.pulses_per_kwh)
+                _LOGGER.info(
+                    "%s: Imported %s stored readings into %s", self.address, len(imported), self.hourly.statistic_id
+                )
             self.energy.set_watermark(history.newest)
             self._save()
             _LOGGER.info(
                 "%s: Counting energy from %s onwards", self.address, dt_util.utc_from_timestamp(history.newest)
             )
+            self._flush_pending_live()
             return
 
         if window is None:
@@ -608,28 +652,9 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
                 unrecoverable,
             )
 
-        self._history_window = (start, end)
-        self._history_records = []
-        self._history_done.clear()
-        self._history_last_arrival = time.monotonic()
-        overall_s = 30 + expected / HISTORY_MIN_RATE
-        _LOGGER.debug("%s: Requesting %s stored records (%s to %s)", self.address, expected, start, end)
-        try:
-            await client.request_history(start, end)
-            deadline = time.monotonic() + overall_s
-            while not self._history_done.is_set() and not self._disconnected.is_set():
-                now = time.monotonic()
-                if now > deadline or now - self._history_last_arrival > HISTORY_IDLE_TIMEOUT_S:
-                    break
-                await self._wait_any((self._history_done, self._disconnected), 1)
-        finally:
-            records = sorted(self._history_records, key=lambda m: m.timestamp)
-            live = sorted(self._pending_live, key=lambda m: m.timestamp)
-            self._history_window = None
-            self._history_records = []
-            self._pending_live = []
-            counted = self._count(records)
-            self._count(live)
+        records = await self._async_fetch_history(client, start, end)
+        counted = self._count(records)
+        self._flush_pending_live()
 
         self.data.last_catch_up = CatchUpResult(
             requested_start=start,
@@ -642,6 +667,57 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         )
         level = logging.INFO if len(records) >= expected else logging.WARNING
         _LOGGER.log(level, "%s: Caught up %s of %s stored readings", self.address, len(records), expected)
+
+    async def _async_fetch_history(self, client: PowerpalClient, start: int, end: int) -> list[Measurement]:
+        """Have the Powerpal replay its stored readings in [start, end], and collect them.
+
+        Live readings that arrive meanwhile are held in _pending_live for the caller.
+        """
+        expected = max(0, (end - start) // RECORD_INTERVAL_S + 1)
+        self._history_window = (start, end)
+        self._history_records = []
+        self._history_done.clear()
+        self._history_last_arrival = time.monotonic()
+        overall_s = 30 + expected / HISTORY_MIN_RATE
+        _LOGGER.debug("%s: Requesting stored readings %s to %s", self.address, start, end)
+        try:
+            await client.request_history(start, end)
+            deadline = time.monotonic() + overall_s
+            while not self._history_done.is_set() and not self._disconnected.is_set():
+                now = time.monotonic()
+                if now > deadline or now - self._history_last_arrival > HISTORY_IDLE_TIMEOUT_S:
+                    break
+                await self._wait_any((self._history_done, self._disconnected), 1)
+        finally:
+            records = sorted(self._history_records, key=lambda m: m.timestamp)
+            self._history_window = None
+            self._history_records = []
+        return records
+
+    async def _async_set_clock(self, client: PowerpalClient, reason: str) -> None:
+        _LOGGER.info("%s: Setting the Powerpal's clock: %s", self.address, reason)
+        await client.set_time(int(time.time()))
+        self._clock_set_at = time.monotonic()
+        self._clock_offsets.clear()
+
+    @callback
+    def _note_clock_offset(self, measurement: Measurement) -> None:
+        """Estimate the Powerpal's clock offset from when a live reading arrived.
+
+        A reading covers the minute starting at its timestamp, and is sent as that minute
+        ends, so it should arrive about 60 s after its timestamp (plus a second or two of
+        delivery). Only meaningful with a one-minute interval.
+        """
+        if self.batch_minutes != 1:
+            return
+        self._clock_offsets.append(time.time() - (measurement.timestamp + RECORD_INTERVAL_S))
+        if len(self._clock_offsets) < CLOCK_OFFSET_MIN_SAMPLES:
+            return
+        offset = statistics.median(self._clock_offsets)
+        self.data.clock_offset = round(offset, 1)
+        recently_set = self._clock_set_at is not None and time.monotonic() - self._clock_set_at < CLOCK_MIN_INTERVAL_S
+        if abs(offset) > CLOCK_DRIFT_LIMIT_S and not recently_set:
+            self._clock_correction_due = True
 
     @callback
     def _flush_pending_live(self) -> None:
@@ -668,6 +744,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
                 self._pending_live.append(measurement)
             return
 
+        self._note_clock_offset(measurement)
         watermark = self.energy.watermark
         expected_gap = self.batch_minutes * RECORD_INTERVAL_S
         if (
@@ -703,6 +780,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
                 )
             counted += 1
             newest = result
+            self.hourly.add(measurement.timestamp, measurement.pulses)
             self.cloud.add(
                 measurement.timestamp,
                 measurement.pulses,
@@ -725,6 +803,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._last_record_wall = time.time()
         self.data.last_record = dt_util.utc_from_timestamp(measurement.timestamp)
         self._save()
+        self.hourly.flush(self.pulses_per_kwh)
         self._schedule_cloud_upload()
         self.async_update_listeners()
         return counted

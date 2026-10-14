@@ -35,6 +35,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: PowerpalConfigEntry) ->
     """Forget the energy totals along with the entry."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.cloud").async_remove()
+    await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.hourly").async_remove()
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: PowerpalConfigEntry) -> None:

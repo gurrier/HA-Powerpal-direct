@@ -83,7 +83,8 @@ did:
   write commands, and on BlueZ a write command is silently ignored.
 - **The clock is set.** On first bonding with Home Assistant, the Powerpal was seen to clear
   its clock, its stored history and its reading interval. It then sent no readings until
-  its clock was set. The integration sets the clock on every connect and every 6 hours.
+  its clock was set. The integration sets the clock whenever that's needed: see
+  [Keeping the Powerpal's clock right](#keeping-the-powerpals-clock-right).
 
 ### Choosing a proxy
 
@@ -109,7 +110,7 @@ Named after the ESP32 gateway's entities, so they're familiar if you're moving f
 | Entity | Description |
 |---|---|
 | Power | Average power over the latest one-minute reading, in W |
-| Total Energy | Lifetime total in kWh, kept across restarts. **Use this one in the Energy dashboard** |
+| Total Energy | Lifetime total in kWh, kept across restarts. For the Energy dashboard, the hourly statistic is better: see [Energy dashboard](#energy-dashboard) |
 | Daily Energy | Total since local midnight, in kWh |
 | Timestamp | Time of the newest reading counted, from the Powerpal's own clock |
 | Pulses | Meter pulses counted in the latest one-minute reading |
@@ -120,16 +121,17 @@ Named after the ESP32 gateway's entities, so they're familiar if you're moving f
 | Device ID | The Powerpal's serial number, which is also its ID in Powerpal's cloud |
 | Cloud Upload | Sends your readings to Powerpal's cloud, as the phone app would. **Off by default**; see [Powerpal's cloud](#powerpals-cloud) |
 | Last Cloud Upload | When readings last reached Powerpal's cloud |
-| BLE Connection | Turn off to release the Powerpal (e.g. so the phone app can connect). It stays released until turned back on, or Home Assistant restarts |
+| BLE Connection | Turn off to release the Powerpal (e.g. so the phone app or an ESP32 gateway can connect). Stays as set across restarts |
 | Advertisement RSSI | The Powerpal's signal strength while it's free. Unknown while connected, since a connected Powerpal stops advertising |
 | Advertisement Rate | Advertisements heard per minute. Non-zero means the connection was down during that minute |
 | Last Stall | What happened the last time the connection was lost, how long the gap was, and how much was recovered from the Powerpal's history. Kept across restarts |
 | Connectivity | Whether Home Assistant currently holds the Powerpal's connection |
+| Clock Offset | How far the Powerpal's clock is behind Home Assistant's (negative: ahead), in seconds, worked out from when readings arrive. A second or two is normal delivery time |
 | Connected Via | The Bluetooth adapter or proxy holding the connection, e.g. `hci0 (18:1D:EA:F5:66:6B)`. Its history shows whenever the connection moves between them. Each one bonds with the Powerpal separately, so frequent moves are worth avoiding |
 | Reconnect | Drops the connection and reconnects straight away |
 
 Disabled by default: **Oldest Stored Reading** (how far back the Powerpal's history goes)
-and **Set Clock** (the clock is already set on every connect and every 6 hours).
+and **Set Clock** (sets the Powerpal's clock now; it's normally kept right automatically).
 
 The gateway entities with no counterpart here are the ones about the ESP32 itself (Restart,
 ESPHome Version, Heap Free, WiFi Signal, Reset Reason, firmware update, the component
@@ -198,6 +200,36 @@ Things to know:
 - Pulses, Watt Hours and Cost now have units, so from the switch-over on they're graphed as
   numbers. Their earlier history is kept.
 
+## Energy dashboard
+
+Powerpal Direct also writes a long-term statistic, **Powerpal … Energy (hourly)**, that
+books every reading to the hour it was measured in. Readings recovered after an outage go
+back into the hours they belong to, rather than the hour they arrived. Choose it as the
+electricity source in Settings → Dashboards → Energy, in place of the Total Energy sensor.
+
+- When it's first created, it copies the hourly history the Total Energy sensor already
+  has, so switching the Energy dashboard over leaves no gap. After taking over from an
+  ESP32 gateway, that's the gateway's history.
+- On a brand-new install, it also imports whatever history the Powerpal holds, so the
+  Energy dashboard starts with that. Total Energy itself still starts from zero.
+- It's separate from Total Energy's own statistics, which are untouched, along with
+  anything built on them, such as utility meters.
+
+## Keeping the Powerpal's clock right
+
+Every reading is stamped by the Powerpal's own clock, and the Powerpal sends nothing at all
+until its clock has been set. Rather than set it on a timer (the ESP32 gateway did every 6
+hours), Powerpal Direct sets it only when needed:
+
+- on connecting, when the Powerpal's history is empty, which is what it looks like after a
+  reset or a new bond;
+- when a connection gets no reading at all shortly after connecting;
+- when the clock has drifted more than a minute from Home Assistant's, judged from when
+  live readings arrive (shown as **Clock Offset**), at most every 6 hours.
+
+**Set Clock** (off by default) sets it on demand. Reading `59DA0004` back doesn't tell you
+the time: it returns the last value written.
+
 ## Options
 
 | Option | Default | Description |
@@ -228,18 +260,16 @@ they were measured on, so history replayed after midnight lands in yesterday, no
 
 ### Things to know
 
-- **Energy recovered after an outage is recorded when it's recovered.** Home Assistant's
-  statistics put it in the hour catch-up happened, not the hours it was used in. The
-  lifetime total is right; the hourly split around an outage isn't.
+- **Total Energy's own statistics put recovered energy in the hour it was recovered.**
+  Home Assistant compiles a sensor's statistics from when its state changes, so after an
+  outage they show the recovered energy in the hour catch-up happened. The total is right.
+  For the hour-by-hour split, use the hourly statistic: see [Energy dashboard](#energy-dashboard).
 - **An outage longer than the Powerpal's stored history loses the oldest minutes.** The
   log says how many. How much the Powerpal keeps isn't known yet; it's been seen holding
   over 12 hours.
 - **Bonding a new host may reset the Powerpal.** When Home Assistant first bonded, the
   Powerpal's stored history was empty and its clock unset. Expect to lose any readings it
   held from before. If your phone app has trouble afterwards, pair the phone again.
-- **The clock is set automatically**, on every connect and every 6 hours, as the ESP32
-  gateway did. **Set Clock** (off by default) does the same on demand. Reading
-  `59DA0004` back doesn't tell you the time: it returns the last value written.
 - Nothing ever writes to the Nordic DFU service (`0xFE59`), which is the firmware update
   path.
 

@@ -19,6 +19,7 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfEnergy,
     UnitOfPower,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -132,6 +133,14 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda c: c.data.advertisement_rate,
+    ),
+    PowerpalSensorDescription(
+        key="clock_offset",
+        translation_key="clock_offset",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.data.clock_offset,
     ),
     PowerpalSensorDescription(
         key="connected_via",
