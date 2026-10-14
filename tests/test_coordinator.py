@@ -25,7 +25,7 @@ from custom_components.powerpal_direct.coordinator import PowerpalCoordinator
 from custom_components.powerpal_direct.energy import EnergyState
 from custom_components.powerpal_direct.protocol import HistoryRange, Measurement
 
-from .fakes import ADDRESS, BLE_DEVICE, PAIRING_CODE, T0, FakeClient, FakePowerpal
+from .fakes import ADDRESS, BLE_DEVICE, PAIRING_CODE, T0, FakeClient, FakePowerpal, until
 
 
 @pytest.fixture
@@ -132,8 +132,7 @@ async def test_persistent_session_streams_until_disconnect(hass: HomeAssistant, 
     coordinator = make_coordinator(hass)
     coordinator.energy.state = EnergyState(watermark=device.history_range.newest)
     session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
-    await asyncio.sleep(0.05)
-    assert coordinator.data.connected
+    await until(lambda: coordinator.data.connected)
     assert device.batch_size == 1
 
     newest = device.history_range.newest
@@ -155,7 +154,7 @@ async def test_run_loop_reauths_on_rejected_code(hass: HomeAssistant, device: Fa
     ):
         bluetooth.async_ble_device_from_address.return_value = BLE_DEVICE
         task = asyncio.create_task(coordinator._async_run())
-        await asyncio.sleep(0.05)
+        await until(lambda: start_reauth.called)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -165,6 +164,7 @@ async def test_run_loop_reauths_on_rejected_code(hass: HomeAssistant, device: Fa
 
 async def test_run_loop_raises_repair_issue_when_bonding_fails(hass: HomeAssistant, device: FakePowerpal) -> None:
     coordinator = make_coordinator(hass, poll_interval=15)
+    issue_id = f"bond_failed_{coordinator.config_entry.entry_id}"
     with (
         patch("custom_components.powerpal_direct.coordinator.bluetooth") as bluetooth,
         patch.object(FakeClient, "connect", side_effect=PowerpalBondError("org.bluez.Error.AuthenticationFailed")),
@@ -172,13 +172,12 @@ async def test_run_loop_raises_repair_issue_when_bonding_fails(hass: HomeAssista
     ):
         bluetooth.async_ble_device_from_address.return_value = BLE_DEVICE
         task = asyncio.create_task(coordinator._async_run())
-        await asyncio.sleep(0.05)
+        await until(lambda: ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     # The code isn't the problem, so don't ask for it again.
     start_reauth.assert_not_called()
-    issue_id = f"bond_failed_{coordinator.config_entry.entry_id}"
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
 
     # A later session that authenticates clears it.
@@ -195,7 +194,7 @@ async def test_empty_history_lets_the_first_live_reading_start_the_count(
     with patch.object(FakePowerpal, "history_range", HistoryRange(oldest=0, newest=0)):
         coordinator = make_coordinator(hass)
         session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
-        await asyncio.sleep(0.05)
+        await until(lambda: coordinator.data.connected)
         assert coordinator.energy.watermark is None
         assert coordinator.data.history_oldest is None
 
@@ -221,7 +220,7 @@ async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, dev
     coordinator = make_coordinator(hass)
     coordinator.energy.state = EnergyState(watermark=device.history_range.newest - 180)
     session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
-    await asyncio.sleep(0.05)
+    await until(lambda: coordinator.data.connected)
     # The link drops on its own: not requested, not the switch.
     coordinator.data.last_error = None
     await device.client.disconnect()
@@ -231,8 +230,7 @@ async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, dev
 
     coordinator.energy.state.watermark = device.history_range.newest - 120
     session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
-    await asyncio.sleep(0.05)
-    assert coordinator.data.last_stall is not None
+    await until(lambda: coordinator.data.last_stall is not None)
     assert "the link dropped" in coordinator.data.last_stall
     assert "recovered 2 of 2 readings" in coordinator.data.last_stall
     await device.client.disconnect()

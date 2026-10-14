@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -22,7 +21,7 @@ from custom_components.powerpal_direct.const import (
 )
 from custom_components.powerpal_direct.protocol import Measurement
 
-from .fakes import ADDRESS, API_KEY, BLE_DEVICE, DEVICE_ID, T0, FakeClient, FakePowerpal
+from .fakes import ADDRESS, API_KEY, BLE_DEVICE, DEVICE_ID, T0, FakeClient, FakePowerpal, until
 
 
 async def test_setup_streams_readings_into_entities(
@@ -60,7 +59,7 @@ async def test_setup_streams_readings_into_entities(
         bluetooth.async_register_callback.return_value = MagicMock()
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-        await asyncio.sleep(0.05)
+        await until(lambda: hass.states.get("sensor.powerpal_00002ba7_total_energy").state == "2.015")
         assert entry.state is ConfigEntryState.LOADED
 
         assert hass.states.get("binary_sensor.powerpal_00002ba7_connectivity").state == "on"
@@ -100,12 +99,12 @@ async def test_setup_streams_readings_into_entities(
         # The connection switch lets go of the Powerpal, and takes it back.
         switch = "switch.powerpal_00002ba7_ble_connection"
         await hass.services.async_call("switch", "turn_off", {"entity_id": switch}, blocking=True)
-        await asyncio.sleep(0.05)
+        await until(lambda: hass.states.get("binary_sensor.powerpal_00002ba7_connectivity").state == "off")
         assert hass.states.get(switch).state == "off"
         assert hass.states.get("binary_sensor.powerpal_00002ba7_connectivity").state == "off"
         assert not device.client.is_connected
         await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
-        await asyncio.sleep(0.05)
+        await until(lambda: hass.states.get("binary_sensor.powerpal_00002ba7_connectivity").state == "on")
         assert hass.states.get(switch).state == "on"
         assert hass.states.get("binary_sensor.powerpal_00002ba7_connectivity").state == "on"
 

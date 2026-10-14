@@ -133,3 +133,16 @@ class FakeClient:
         """Send a measurement notification, as the Powerpal does every reading."""
         assert self._on_measurement is not None
         self._on_measurement(measurement)
+
+
+async def until(condition: Callable[[], object], timeout: float = 2.0) -> None:
+    """Wait for background work to reach a state, rather than sleeping a fixed time.
+
+    A fixed sleep is flaky on a busy machine; this waits only as long as needed.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition():
+        if loop.time() > deadline:
+            raise AssertionError("Timed out waiting for the condition")
+        await asyncio.sleep(0.01)

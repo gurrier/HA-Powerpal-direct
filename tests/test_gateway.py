@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,7 +27,7 @@ from custom_components.powerpal_direct.gateway import (
     rates_from_readings,
 )
 
-from .fakes import ADDRESS, BLE_DEVICE, T0, FakeClient, FakePowerpal
+from .fakes import ADDRESS, BLE_DEVICE, T0, FakeClient, FakePowerpal, until
 
 GATEWAY_MAC = "84:CC:A8:52:12:7C"
 
@@ -134,7 +133,7 @@ async def test_takes_over_entity_ids_and_carries_on(hass: HomeAssistant) -> None
         bluetooth.async_register_callback.return_value = MagicMock()
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-        await asyncio.sleep(0.05)
+        await until(lambda: hass.states.get("sensor.powerpal_gateway_powerpal_total_energy").state == "19.365")
 
         ours = {e.entity_id for e in er.async_entries_for_config_entry(registry, entry.entry_id)}
         assert {
