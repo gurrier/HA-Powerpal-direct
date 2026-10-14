@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import time
 from typing import Any
@@ -17,12 +17,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .client import DeviceIdentity, PowerpalAuthError, PowerpalBondError, PowerpalClient
+from .cloud import CloudUploader
 from .const import (
     CONF_COST_PER_KWH,
     CONF_NOTIFICATION_INTERVAL,
@@ -37,6 +38,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .energy import EnergyAccumulator, EnergyState
+from .gateway import GatewayEntities, async_last_gateway_readings
 from .protocol import RECORD_INTERVAL_S, Measurement, PowerpalProtocolError
 
 _LOGGER = logging.getLogger(__name__)
@@ -92,6 +94,10 @@ class PowerpalData:
     history_oldest: datetime | None = None
     last_catch_up: CatchUpResult | None = None
     last_error: str | None = None
+    # Heard only while the Powerpal is free, since it stops advertising once connected.
+    advertisement_rssi: int | None = None
+    advertisement_rate: int | None = None
+    last_stall: str | None = None
 
 
 class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
@@ -127,6 +133,15 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._last_record_arrival: float | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._stopping = False
+        self.gateway = GatewayEntities(available={}, still_present={})
+        self.cloud = CloudUploader(hass, entry.entry_id)
+        self._ads_this_minute = 0
+        # Why the last connection was lost, and when its last reading arrived (wall time),
+        # reported as Last Stall once readings resume.
+        self._drop_reason: str | None = None
+        self._drop_since: float | None = None
+        self._last_record_wall: float | None = None
+        self._intentional_drop = False
         # Off releases the Powerpal (e.g. for the phone app) until switched back on. Like the
         # gateway's connection switch, it's back on after a restart.
         self.connection_enabled = True
@@ -150,18 +165,20 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     def daily_kwh(self) -> float:
         return self.energy.state.daily_pulses / self.pulses_per_kwh
 
+    def watt_hours(self, pulses: int) -> int:
+        """Energy in one reading, rounded to whole Wh as the gateway did."""
+        return round(pulses / self.pulses_per_kwh * 1000)
+
+    def cost(self, pulses: int) -> float:
+        return round(pulses / self.pulses_per_kwh * self.cost_per_kwh, 6)
+
     @property
     def last_watt_hours(self) -> int | None:
-        """Energy in the latest reading, rounded to whole Wh as the gateway did."""
-        if self.data.last_pulses is None:
-            return None
-        return round(self.data.last_pulses / self.pulses_per_kwh * 1000)
+        return None if self.data.last_pulses is None else self.watt_hours(self.data.last_pulses)
 
     @property
     def last_cost(self) -> float | None:
-        if self.data.last_pulses is None:
-            return None
-        return round(self.data.last_pulses / self.pulses_per_kwh * self.cost_per_kwh, 6)
+        return None if self.data.last_pulses is None else self.cost(self.data.last_pulses)
 
     @property
     def power_available(self) -> bool:
@@ -173,8 +190,14 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
 
     async def async_start(self) -> None:
         self.energy.state = EnergyState.from_dict(await self._store.async_load())
+        await self._async_carry_on_from_gateway()
+        await self.cloud.async_load()
+        self._unsubs.append(async_track_time_interval(self.hass, self._async_retry_cloud_upload, timedelta(minutes=5)))
         if self.energy.roll_day(dt_util.now().date()):
             self._save()
+        self._unsubs.append(
+            async_track_time_interval(self.hass, self._async_sample_advertisement_rate, timedelta(minutes=1))
+        )
 
         self._unsubs.append(
             bluetooth.async_register_callback(
@@ -202,6 +225,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     async def async_set_connection_enabled(self, enabled: bool) -> None:
         """Hold the Powerpal's connection, or let go of it and stay away."""
         self.connection_enabled = enabled
+        self._intentional_drop = True
         self._wake.set()
         if not enabled and self._client is not None:
             await self._client.disconnect()
@@ -209,6 +233,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
 
     async def async_reconnect(self) -> None:
         """Drop the connection (if any) and connect again now."""
+        self._intentional_drop = True
         self._wake.set()
         if self._client is not None:
             await self._client.disconnect()
@@ -227,6 +252,65 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     ) -> None:
         # A connected Powerpal stops advertising, so any advertisement means it's free.
         self._advertised.set()
+        self._ads_this_minute += 1
+        if not self.data.connected:
+            self.data.advertisement_rssi = service_info.rssi
+
+    @callback
+    def _async_sample_advertisement_rate(self, now: datetime) -> None:
+        self.data.advertisement_rate, self._ads_this_minute = self._ads_this_minute, 0
+        self.async_update_listeners()
+
+    async def _async_carry_on_from_gateway(self) -> None:
+        """On first setup after an ESP32 gateway, start from where it left off.
+
+        Its last Total Energy becomes the starting total, so the energy sensor carries on
+        rather than dropping to zero, and its last Timestamp becomes the watermark, so the
+        first catch-up fetches the minutes since the gateway stopped from the Powerpal's
+        own history.
+        """
+        state = self.energy.state
+        if state.total_pulses or state.watermark is not None or not self.gateway.available:
+            return
+        readings = await async_last_gateway_readings(self.hass, self.gateway.available)
+        if readings.total_kwh is not None:
+            state.total_pulses = round(readings.total_kwh * self.pulses_per_kwh)
+        if readings.daily_kwh is not None and readings.daily_date == dt_util.now().date().isoformat():
+            state.daily_pulses = round(readings.daily_kwh * self.pulses_per_kwh)
+            state.daily_date = readings.daily_date
+        if readings.last_reading is not None:
+            state.watermark = readings.last_reading
+        if readings.total_kwh is not None or readings.last_reading is not None:
+            _LOGGER.info(
+                "%s: Carrying on from the ESP32 gateway: total %s kWh, last reading %s",
+                self.address,
+                readings.total_kwh,
+                dt_util.utc_from_timestamp(readings.last_reading) if readings.last_reading else None,
+            )
+            self._save()
+
+    @callback
+    def async_set_cloud_upload(self, enabled: bool) -> None:
+        self.cloud.set_enabled(enabled)
+        self.async_update_listeners()
+
+    @callback
+    def _async_retry_cloud_upload(self, now: datetime) -> None:
+        self._schedule_cloud_upload()
+
+    @callback
+    def _schedule_cloud_upload(self) -> None:
+        if not self.cloud.enabled or not self.cloud.pending or (identity := self.data.identity) is None:
+            return
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_cloud_upload(identity.device_id, identity.api_key),
+            f"{DOMAIN} {self.address} cloud upload",
+        )
+
+    async def _async_cloud_upload(self, device_id: str, api_key: str) -> None:
+        await self.cloud.async_flush(device_id, api_key)
+        self.async_update_listeners()
 
     @callback
     def _async_midnight(self, now: datetime) -> None:
@@ -269,6 +353,33 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             self.address,
             info.source,
         )
+
+    @callback
+    def _note_drop(self) -> None:
+        """Remember why a live connection ended, unless it was meant to."""
+        intentional, self._intentional_drop = self._intentional_drop, False
+        if not self.data.connected or not self.persistent or self._stopping or intentional:
+            return
+        if self._drop_reason is None:
+            self._drop_reason = f"disconnected: {self.data.last_error}" if self.data.last_error else "the link dropped"
+        if self._drop_since is None:
+            self._drop_since = self._last_record_wall or time.time()
+
+    @callback
+    def _report_recovered_stall(self) -> None:
+        """After reconnecting from an unplanned drop, say what happened, as Last Stall."""
+        if self._drop_reason is None:
+            return
+        gap_s = time.time() - (self._drop_since or time.time())
+        text = f"{_describe_gap(gap_s)} gap: {self._drop_reason}"
+        if (catch_up := self.data.last_catch_up) is not None and catch_up.finished_at > dt_util.utcnow() - timedelta(
+            minutes=1
+        ):
+            text += f"; recovered {catch_up.received} of {catch_up.expected} readings from the Powerpal"
+        self.data.last_stall = text[:255]
+        self._drop_reason = None
+        self._drop_since = None
+        self.async_update_listeners()
 
     @callback
     def _set_connected(self, connected: bool) -> None:
@@ -342,6 +453,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
                 if client is not None:
                     await client.disconnect()
                 self._history_window = None
+                self._note_drop()
                 self._set_connected(False)
 
             if delay:
@@ -385,11 +497,13 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self.data.battery = await client.read_battery()
         self.data.led_sensitivity = await client.read_led_sensitivity()
         self._set_connected(True)
+        self.data.advertisement_rssi = None
         self.async_update_listeners()
         # Staleness is judged per connection; catch-up covers whatever came before.
         self._last_record_arrival = time.monotonic()
 
         await self._async_catch_up(client, None)
+        self._report_recovered_stall()
         if not self.persistent:
             return
 
@@ -405,6 +519,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             stale_after = self.batch_minutes * 60 + STALE_GRACE_S
             if self._last_record_arrival is not None and time.monotonic() - self._last_record_arrival > stale_after:
                 _LOGGER.warning("%s: No reading for over %s s; reconnecting to recover", self.address, stale_after)
+                self._drop_reason = "connected, but the Powerpal stopped sending readings"
                 return
             if time.monotonic() - last_clock_sync > CLOCK_SYNC_S:
                 last_clock_sync = time.monotonic()
@@ -556,6 +671,12 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
                 )
             counted += 1
             newest = result
+            self.cloud.add(
+                measurement.timestamp,
+                measurement.pulses,
+                self.watt_hours(measurement.pulses),
+                self.cost(measurement.pulses),
+            )
         if newest is None:
             return 0
 
@@ -569,7 +690,16 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             self.data.power_w = round(measurement.pulses / self.pulses_per_kwh * 3_600_000 / interval, 1)
             self.data.power_updated = time.monotonic()
         self.data.last_pulses = measurement.pulses
+        self._last_record_wall = time.time()
         self.data.last_record = dt_util.utc_from_timestamp(measurement.timestamp)
         self._save()
+        self._schedule_cloud_upload()
         self.async_update_listeners()
         return counted
+
+
+def _describe_gap(seconds: float) -> str:
+    minutes = round(seconds / 60)
+    if minutes < 120:
+        return f"{minutes} min"
+    return f"{minutes / 60:.1f} h"

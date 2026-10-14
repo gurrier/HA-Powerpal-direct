@@ -103,27 +103,99 @@ tries again every 30 minutes, or when you press **Reconnect**.
 
 ## Entities
 
+Named after the ESP32 gateway's entities, so they're familiar if you're moving from
+[esphome-powerpal_ble](https://github.com/gurrier/esphome-powerpal_ble).
+
 | Entity | Description |
 |---|---|
 | Power | Average power over the latest one-minute reading, in W |
-| Energy | Lifetime total in kWh, kept across restarts. **Use this one in the Energy dashboard** |
-| Energy today | Total since local midnight, in kWh |
+| Total Energy | Lifetime total in kWh, kept across restarts. **Use this one in the Energy dashboard** |
+| Daily Energy | Total since local midnight, in kWh |
+| Timestamp | Time of the newest reading counted, from the Powerpal's own clock |
+| Pulses | Meter pulses counted in the latest one-minute reading |
+| Watt Hours | Energy in the latest reading, in whole Wh |
+| Cost | That energy at your **Cost per kWh** option (0 unless set) |
 | Battery | Powerpal battery level |
+| LED Sensitivity | The Powerpal's LED sensor sensitivity (1-14, default 9) |
+| Device ID | The Powerpal's serial number, which is also its ID in Powerpal's cloud |
+| Cloud Upload | Sends your readings to Powerpal's cloud, as the phone app would. **Off by default**; see [Powerpal's cloud](#powerpals-cloud) |
+| Last Cloud Upload | When readings last reached Powerpal's cloud |
+| BLE Connection | Turn off to release the Powerpal (e.g. so the phone app can connect). It stays released until turned back on, or Home Assistant restarts |
+| Advertisement RSSI | The Powerpal's signal strength while it's free. Unknown while connected, since a connected Powerpal stops advertising |
+| Advertisement Rate | Advertisements heard per minute. Non-zero means the connection was down during that minute |
+| Last Stall | What happened the last time the connection was lost, how long the gap was, and how much was recovered from the Powerpal's history. Kept across restarts |
 | Connectivity | Whether Home Assistant currently holds the Powerpal's connection |
-| Last reading | Time of the newest reading counted, from the Powerpal's own clock |
-| Pulses in last reading | Meter pulses counted in the latest one-minute reading |
-| Watt hours in last reading | Energy in the latest reading, in whole Wh |
-| Cost in last reading | That energy at your **Cost per kWh** option (0 unless set) |
-| LED sensitivity | The Powerpal's LED sensor sensitivity (1-14, default 9) |
-| Connection | Turn off to release the Powerpal (e.g. so the phone app can connect). It stays released until turned back on, or Home Assistant restarts |
 | Reconnect | Drops the connection and reconnects straight away |
 
-The three "last reading" sensors match the ESP32 gateway's Pulses, Watt Hours and Cost, so
-anything built on those (such as uploading readings to Powerpal's cloud) carries over.
+Disabled by default: **Oldest Stored Reading** (how far back the Powerpal's history goes)
+and **Set Clock** (the clock is already set on every connect and every 6 hours).
 
-Disabled by default: **Oldest stored reading** (how far back
-the Powerpal's history goes), **Cloud API key** (for Powerpal's cloud API, together with
-the device's serial number, shown on the device page) and **Set clock to now**.
+The gateway entities with no counterpart here are the ones about the ESP32 itself (Restart,
+ESPHome Version, Heap Free, WiFi Signal, Reset Reason, firmware update, the component
+version, and the watchdog's restart count and reason), plus API Key and the button that
+retrieved it. The API key is never exposed as an entity: Powerpal Direct reads it from the
+Powerpal whenever it needs it. Link RSSI isn't available yet.
+
+## Powerpal's cloud
+
+While Home Assistant holds the Powerpal's connection, the Powerpal app can't connect, so
+the app and Powerpal's cloud stop getting your readings. Turn on **Cloud Upload** to send
+them from Home Assistant instead:
+
+- Each reading is sent with its own timestamp, including readings recovered from the
+  Powerpal's history after an outage.
+- It uses the API key and device ID read from the Powerpal itself, so there's nothing to
+  copy or keep in `secrets.yaml`.
+- If Powerpal's cloud can't be reached, readings wait (across restarts too, up to a week's
+  worth) and go up once it's back.
+- It stays as you set it across restarts. Turning it off stops sending immediately, and
+  drops anything still waiting.
+
+It's off by default because it shares your usage with Powerpal.
+
+If you already upload readings with your own automation and `rest_command` (common with the
+ESP32 gateway), disable that automation before turning this on, or readings will be sent
+twice. See [Migrating from the ESP32 gateway](#migrating-from-the-esp32-gateway).
+
+## Migrating from the ESP32 gateway
+
+Powerpal Direct can take over the gateway's entity IDs, so history, long-term statistics,
+the Energy dashboard, utility meters and automations all carry on without editing anything.
+
+1. **Turn off any automation that uploads readings to Powerpal's cloud** with a
+   `rest_command` (Settings → Automations & scenes → the automation → ⋮ → **Disable**).
+   Do this first. Powerpal Direct takes over the gateway's Pulses, Watt Hours and Cost
+   entity IDs, so such an automation would carry on firing on the new sensors and send
+   every reading twice: once from it, and once from **Cloud Upload** if you turn that on.
+   Once Cloud Upload is working, the automation, its `rest_command` and any API key kept in
+   `secrets.yaml` for it can be deleted. Powerpal Direct reads the key from the Powerpal.
+2. **Remove the gateway's device** from Home Assistant: Settings → Devices & services →
+   ESPHome → the gateway → ⋮ → **Delete**, and power the ESP32 off (or reflash it as a
+   Bluetooth proxy). Removing it frees its entity IDs.
+3. **Add Powerpal Direct.** Each entity that has a gateway counterpart is created under the
+   gateway's old entity ID, found by name (`Powerpal Total Energy` and so on), whatever its
+   device or area prefix was. Setup also works out the gateway's pulses per kWh from its
+   recorded Pulses and Watt Hours, and fills it in for you to confirm. It must match the
+   gateway's, or the total carried over is rescaled. Cost per kWh is carried over the same
+   way.
+4. **It carries on from the gateway's last readings.** Total Energy starts from the
+   gateway's last Total Energy, rather than zero. Today's Daily Energy carries on too. The
+   gateway's last Timestamp becomes the starting point, so the first catch-up fetches the
+   minutes since the gateway stopped from the Powerpal's own history.
+
+Things to know:
+
+- Only entities that don't exist yet are created this way. If Powerpal Direct was already
+  set up alongside the gateway, delete Powerpal Direct as well, then add it again after
+  step 2. The Bluetooth bond is kept, so it only needs the pairing code again.
+- The gateway's entities are recognised by the names the ESPHome component documents. If
+  you renamed them in your YAML, rename Powerpal Direct's entities by hand instead
+  (Settings → Entities → the entity → entity ID). Home Assistant then attaches the old
+  history to the new entity.
+- Home Assistant remembers removed entities for 30 days, so add Powerpal Direct within
+  that time of removing the gateway.
+- Pulses, Watt Hours and Cost now have units, so from the switch-over on they're graphed as
+  numbers. Their earlier history is kept.
 
 ## Options
 
@@ -132,7 +204,7 @@ the device's serial number, shown on the device page) and **Set clock to now**.
 | Meter pulses per kWh | 1000 | Changing it rescales the whole total, not just new readings |
 | Catch-up interval | 0 | `0` stays connected for live readings, as the ESP32 gateway did. Any other value connects every that many minutes, fetches the readings stored since the last visit, and disconnects. Power then only updates at each visit, but the Bluetooth connection slot is free in between |
 | Live reading interval | 1 | When staying connected: minutes between the Powerpal's live readings |
-| Cost per kWh | 0 | Flat rate for the **Cost in last reading** sensor |
+| Cost per kWh | 0 | Flat rate for the **Cost** sensor |
 
 ## How it works
 
@@ -165,7 +237,7 @@ they were measured on, so history replayed after midnight lands in yesterday, no
   Powerpal's stored history was empty and its clock unset. Expect to lose any readings it
   held from before. If your phone app has trouble afterwards, pair the phone again.
 - **The clock is set automatically**, on every connect and every 6 hours, as the ESP32
-  gateway did. **Set clock to now** (off by default) does the same on demand. Reading
+  gateway did. **Set Clock** (off by default) does the same on demand. Reading
   `59DA0004` back doesn't tell you the time: it returns the last value written.
 - Nothing ever writes to the Nordic DFU service (`0xFE59`), which is the firmware update
   path.

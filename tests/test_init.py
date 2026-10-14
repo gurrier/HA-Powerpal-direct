@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -21,10 +22,12 @@ from custom_components.powerpal_direct.const import (
 )
 from custom_components.powerpal_direct.protocol import Measurement
 
-from .fakes import ADDRESS, BLE_DEVICE, T0, FakeClient, FakePowerpal
+from .fakes import ADDRESS, API_KEY, BLE_DEVICE, DEVICE_ID, T0, FakeClient, FakePowerpal
 
 
-async def test_setup_streams_readings_into_entities(hass: HomeAssistant, hass_storage: dict) -> None:
+async def test_setup_streams_readings_into_entities(
+    hass: HomeAssistant, hass_storage: dict, aioclient_mock: AiohttpClientMocker
+) -> None:
     hass.config.components.add("bluetooth_adapters")
     device = FakePowerpal()
     device.add_minutes(T0 - 600, 10)
@@ -61,23 +64,41 @@ async def test_setup_streams_readings_into_entities(hass: HomeAssistant, hass_st
         assert entry.state is ConfigEntryState.LOADED
 
         assert hass.states.get("binary_sensor.powerpal_00002ba7_connectivity").state == "on"
-        assert hass.states.get("sensor.powerpal_00002ba7_energy").state == "2.015"
+        assert hass.states.get("sensor.powerpal_00002ba7_total_energy").state == "2.015"
         assert hass.states.get("sensor.powerpal_00002ba7_battery").state == "87"
         assert hass.states.get("sensor.powerpal_00002ba7_power").state == "300.0"
 
         device.client.notify(Measurement(T0, 10))
         await hass.async_block_till_done()
-        assert hass.states.get("sensor.powerpal_00002ba7_energy").state == "2.025"
+        assert hass.states.get("sensor.powerpal_00002ba7_total_energy").state == "2.025"
         assert hass.states.get("sensor.powerpal_00002ba7_power").state == "600.0"
         # The gateway's per-reading sensors, which the Powerpal cloud upload uses.
-        assert hass.states.get("sensor.powerpal_00002ba7_pulses_in_last_reading").state == "10"
-        assert hass.states.get("sensor.powerpal_00002ba7_watt_hours_in_last_reading").state == "10"
-        cost = hass.states.get("sensor.powerpal_00002ba7_cost_in_last_reading")
+        assert hass.states.get("sensor.powerpal_00002ba7_pulses").state == "10"
+        assert hass.states.get("sensor.powerpal_00002ba7_watt_hours").state == "10"
+        cost = hass.states.get("sensor.powerpal_00002ba7_cost")
         assert float(cost.state) == 0.003
         assert cost.attributes["unit_of_measurement"] == hass.config.currency
 
+        # Read from the Powerpal on connect. The API key is never exposed as an entity.
+        assert hass.states.get("sensor.powerpal_00002ba7_device_id").state == "00002ba7"
+        assert not [entity_id for entity_id in hass.states.async_entity_ids() if "api_key" in entity_id]
+        # Cloud upload is off until turned on; then readings go up with the Powerpal's own
+        # device ID and API key.
+        assert hass.states.get("switch.powerpal_00002ba7_cloud_upload").state == "off"
+        aioclient_mock.post(f"https://readings.powerpal.net/api/v1/meter_reading/{DEVICE_ID}", status=200)
+        await hass.services.async_call(
+            "switch", "turn_on", {"entity_id": "switch.powerpal_00002ba7_cloud_upload"}, blocking=True
+        )
+        device.client.notify(Measurement(T0 + 60, 3))
+        await hass.async_block_till_done()
+        assert aioclient_mock.call_count == 1
+        assert aioclient_mock.mock_calls[0][2] == [
+            {"cost": 0.0009, "is_peak": False, "pulses": 3, "timestamp": T0 + 60, "watt_hours": 3}
+        ]
+        assert aioclient_mock.mock_calls[0][3]["authorization"] == API_KEY
+
         # The connection switch lets go of the Powerpal, and takes it back.
-        switch = "switch.powerpal_00002ba7_connection"
+        switch = "switch.powerpal_00002ba7_ble_connection"
         await hass.services.async_call("switch", "turn_off", {"entity_id": switch}, blocking=True)
         await asyncio.sleep(0.05)
         assert hass.states.get(switch).state == "off"
@@ -96,4 +117,4 @@ async def test_setup_streams_readings_into_entities(hass: HomeAssistant, hass_st
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
 
-    assert hass_storage[f"{DOMAIN}.{entry.entry_id}"]["data"]["total_pulses"] == 2025
+    assert hass_storage[f"{DOMAIN}.{entry.entry_id}"]["data"]["total_pulses"] == 2028

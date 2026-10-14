@@ -11,6 +11,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.util import dt as dt_util
 
 from custom_components.powerpal_direct.client import PowerpalBondError
 from custom_components.powerpal_direct.const import (
@@ -214,3 +215,45 @@ async def test_sets_the_clock_on_every_connect(hass: HomeAssistant, device: Fake
         await coordinator._async_session(BLE_DEVICE)
         await coordinator._async_session(BLE_DEVICE)
     assert device.clock_writes == [1_791_000_123, 1_791_000_123]
+
+
+async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    coordinator.energy.state = EnergyState(watermark=device.history_range.newest - 180)
+    session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+    await asyncio.sleep(0.05)
+    # The link drops on its own: not requested, not the switch.
+    coordinator.data.last_error = None
+    await device.client.disconnect()
+    await asyncio.wait_for(session, 1)
+    coordinator._note_drop()
+    coordinator._set_connected(False)
+
+    coordinator.energy.state.watermark = device.history_range.newest - 120
+    session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+    await asyncio.sleep(0.05)
+    assert coordinator.data.last_stall is not None
+    assert "the link dropped" in coordinator.data.last_stall
+    assert "recovered 2 of 2 readings" in coordinator.data.last_stall
+    await device.client.disconnect()
+    await asyncio.wait_for(session, 1)
+
+
+async def test_switching_off_is_not_a_stall(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    coordinator.data.connected = True
+    await coordinator.async_set_connection_enabled(False)
+    coordinator._note_drop()
+    assert coordinator._drop_reason is None
+
+
+async def test_advertisements_while_free(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    info = MagicMock(rssi=-61)
+    for _ in range(3):
+        coordinator._async_on_advertisement(info, MagicMock())
+    assert coordinator.data.advertisement_rssi == -61
+    coordinator._async_sample_advertisement_rate(dt_util.now())
+    assert coordinator.data.advertisement_rate == 3
+    coordinator._async_sample_advertisement_rate(dt_util.now())
+    assert coordinator.data.advertisement_rate == 0

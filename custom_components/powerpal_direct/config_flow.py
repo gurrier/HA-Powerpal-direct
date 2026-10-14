@@ -32,6 +32,7 @@ from .const import (
     POLL_INTERVAL_MAX,
 )
 from .coordinator import PowerpalConfigEntry
+from .gateway import GatewayRates, async_detect_gateway_rates, find_gateway_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._discovery: BluetoothServiceInfoBleak | None = None
         self._discovered: dict[str, BluetoothServiceInfoBleak] = {}
+        self._gateway_rates: GatewayRates | None = None
 
     @staticmethod
     @callback
@@ -119,6 +121,12 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
         """Ask for the pairing code and the meter's pulse rate, and check the code works."""
         assert self._discovery is not None
         errors: dict[str, str] = {}
+        if self._gateway_rates is None:
+            # An ESP32 gateway's recorded readings say what its pulses per kWh and cost per
+            # kWh were. Pulses per kWh has to match, or the total it carries on from is
+            # rescaled, so it's offered as the default rather than left to be retyped.
+            self._gateway_rates = await async_detect_gateway_rates(self.hass, find_gateway_entities(self.hass))
+        rates = self._gateway_rates
         if user_input is not None:
             code = _parse_pairing_code(user_input[CONF_PAIRING_CODE])
             if code is None:
@@ -131,23 +139,33 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_PULSES_PER_KWH: float(user_input[CONF_PULSES_PER_KWH]),
                         CONF_NOTIFICATION_INTERVAL: DEFAULT_NOTIFICATION_INTERVAL,
                         CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
-                        CONF_COST_PER_KWH: DEFAULT_COST_PER_KWH,
+                        CONF_COST_PER_KWH: (
+                            rates.cost_per_kwh if rates.cost_per_kwh is not None else DEFAULT_COST_PER_KWH
+                        ),
                     },
                 )
 
+        pulses_default = rates.pulses_per_kwh or DEFAULT_PULSES_PER_KWH
         return self.async_show_form(
             step_id="pair",
             data_schema=self.add_suggested_values_to_schema(
                 vol.Schema(
                     {
                         vol.Required(CONF_PAIRING_CODE): PAIRING_CODE_SELECTOR,
-                        vol.Required(CONF_PULSES_PER_KWH, default=DEFAULT_PULSES_PER_KWH): PULSES_SELECTOR,
+                        vol.Required(CONF_PULSES_PER_KWH, default=pulses_default): PULSES_SELECTOR,
                     }
                 ),
                 user_input,
             ),
             errors=errors,
-            description_placeholders={"name": self._discovery.name or self._discovery.address},
+            description_placeholders={
+                "name": self._discovery.name or self._discovery.address,
+                "gateway_note": (
+                    f"\n\nPulses per kWh is set to {pulses_default:g}, found from your ESP32 gateway's readings."
+                    if rates.pulses_per_kwh
+                    else ""
+                ),
+            },
         )
 
     async def _async_try(self, code: int, errors: dict[str, str]) -> DeviceIdentity | None:

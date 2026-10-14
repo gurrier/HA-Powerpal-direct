@@ -8,12 +8,15 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, STORAGE_VERSION
 from .coordinator import PowerpalConfigEntry, PowerpalCoordinator
+from .gateway import find_gateway_entities
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR, Platform.SWITCH]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: PowerpalConfigEntry) -> bool:
     coordinator = PowerpalCoordinator(hass, entry)
+    # Before the entities are added, so they can take over a removed gateway's entity IDs.
+    coordinator.gateway = find_gateway_entities(hass)
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await coordinator.async_start()
@@ -31,6 +34,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: PowerpalConfigEntry) ->
 async def async_remove_entry(hass: HomeAssistant, entry: PowerpalConfigEntry) -> None:
     """Forget the energy totals along with the entry."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.cloud").async_remove()
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: PowerpalConfigEntry) -> None:

@@ -6,8 +6,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription, SensorStateClass
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfEnergy, UnitOfPower
+from homeassistant.components.sensor import (
+    RestoreSensor,
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
+from homeassistant.const import (
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -22,6 +34,8 @@ class PowerpalSensorDescription(SensorEntityDescription):
 
 
 SENSORS: tuple[PowerpalSensorDescription, ...] = (
+    # Named, classed and categorised like the ESP32 gateway's entities, so that taking over
+    # their entity IDs carries their history and statistics on without conflicts.
     PowerpalSensorDescription(
         key="power",
         device_class=SensorDeviceClass.POWER,
@@ -50,6 +64,26 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
         value_fn=lambda c: c.daily_kwh,
     ),
     PowerpalSensorDescription(
+        key="battery",
+        device_class=SensorDeviceClass.BATTERY,
+        native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.data.battery,
+    ),
+    PowerpalSensorDescription(
+        key="led_sensitivity",
+        translation_key="led_sensitivity",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.data.led_sensitivity,
+    ),
+    PowerpalSensorDescription(
+        key="last_reading",
+        translation_key="last_reading",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda c: c.data.last_record,
+    ),
+    PowerpalSensorDescription(
         key="last_pulses",
         translation_key="last_pulses",
         state_class=SensorStateClass.MEASUREMENT,
@@ -71,11 +105,39 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
         value_fn=lambda c: c.last_cost,
     ),
     PowerpalSensorDescription(
-        key="last_reading",
-        translation_key="last_reading",
+        key="device_id",
+        translation_key="device_id",
+        value_fn=lambda c: c.data.identity.device_id if c.data.identity else None,
+    ),
+    PowerpalSensorDescription(
+        key="last_cloud_upload",
+        translation_key="last_cloud_upload",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda c: c.data.last_record,
+        value_fn=lambda c: c.cloud.last_upload,
+    ),
+    PowerpalSensorDescription(
+        key="advertisement_rssi",
+        translation_key="advertisement_rssi",
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.data.advertisement_rssi,
+    ),
+    PowerpalSensorDescription(
+        key="advertisement_rate",
+        translation_key="advertisement_rate",
+        native_unit_of_measurement="ads/min",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.data.advertisement_rate,
+    ),
+    PowerpalSensorDescription(
+        key="last_stall",
+        translation_key="last_stall",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.data.last_stall,
     ),
     PowerpalSensorDescription(
         key="history_oldest",
@@ -85,27 +147,6 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         value_fn=lambda c: c.data.history_oldest,
     ),
-    PowerpalSensorDescription(
-        key="battery",
-        device_class=SensorDeviceClass.BATTERY,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=PERCENTAGE,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda c: c.data.battery,
-    ),
-    PowerpalSensorDescription(
-        key="led_sensitivity",
-        translation_key="led_sensitivity",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda c: c.data.led_sensitivity,
-    ),
-    PowerpalSensorDescription(
-        key="api_key",
-        translation_key="api_key",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda c: c.data.identity.api_key if c.data.identity else None,
-    ),
 )
 
 
@@ -113,11 +154,15 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: PowerpalConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(PowerpalSensor(coordinator, description) for description in SENSORS)
+    async_add_entities(
+        (PowerpalLastStallSensor if description.key == "last_stall" else PowerpalSensor)(coordinator, description)
+        for description in SENSORS
+    )
 
 
 class PowerpalSensor(PowerpalEntity, SensorEntity):
     entity_description: PowerpalSensorDescription
+    _entity_domain = "sensor"
 
     def __init__(self, coordinator: PowerpalCoordinator, description: PowerpalSensorDescription) -> None:
         super().__init__(coordinator, description)
@@ -131,3 +176,12 @@ class PowerpalSensor(PowerpalEntity, SensorEntity):
     @property
     def native_value(self) -> float | int | str | datetime | None:
         return self.entity_description.value_fn(self.coordinator)
+
+
+class PowerpalLastStallSensor(PowerpalSensor, RestoreSensor):
+    """Kept across restarts, like the gateway's, since stalls are rare and worth remembering."""
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self.coordinator.data.last_stall is None and (last := await self.async_get_last_sensor_data()):
+            self.coordinator.data.last_stall = last.native_value  # type: ignore[assignment]

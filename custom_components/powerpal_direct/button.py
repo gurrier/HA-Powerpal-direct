@@ -45,6 +45,7 @@ async def async_setup_entry(
 
 class PowerpalButton(PowerpalEntity, ButtonEntity):
     entity_description: PowerpalButtonDescription
+    _entity_domain = "button"
 
     @property
     def available(self) -> bool:

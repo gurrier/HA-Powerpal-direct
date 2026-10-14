@@ -21,6 +21,7 @@ from custom_components.powerpal_direct.const import (
     CONF_PULSES_PER_KWH,
     DOMAIN,
 )
+from custom_components.powerpal_direct.gateway import GatewayRates
 
 from .fakes import ADDRESS, API_KEY, DEVICE_ID, service_info
 
@@ -165,3 +166,30 @@ async def test_options(hass: HomeAssistant) -> None:
         CONF_POLL_INTERVAL: 15,
         CONF_COST_PER_KWH: 0.25,
     }
+
+
+async def test_settings_found_from_an_esp32_gateway(hass: HomeAssistant, validate: AsyncMock) -> None:
+    with patch(
+        f"{FLOW}.async_detect_gateway_rates", return_value=GatewayRates(pulses_per_kwh=800.0, cost_per_kwh=0.25)
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+        )
+    assert "800" in result["description_placeholders"]["gateway_note"]
+    defaults = {
+        str(key): key.default() for key in result["data_schema"].schema if callable(getattr(key, "default", None))
+    }
+    assert defaults[CONF_PULSES_PER_KWH] == 800.0
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PAIRING_CODE: "123123", CONF_PULSES_PER_KWH: 800}
+    )
+    assert result["options"][CONF_PULSES_PER_KWH] == 800.0
+    assert result["options"][CONF_COST_PER_KWH] == 0.25
+
+
+async def test_no_gateway_no_note(hass: HomeAssistant, validate: AsyncMock) -> None:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+    )
+    assert result["description_placeholders"]["gateway_note"] == ""

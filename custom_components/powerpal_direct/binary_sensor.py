@@ -30,6 +30,8 @@ async def async_setup_entry(
 class PowerpalConnectedSensor(PowerpalEntity, BinarySensorEntity):
     """Whether Home Assistant currently holds the Powerpal's single connection."""
 
+    _entity_domain = "binary_sensor"
+
     @property
     def available(self) -> bool:
         return True

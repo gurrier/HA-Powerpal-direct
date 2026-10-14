@@ -10,14 +10,14 @@
       },
       "pair": {
         "title": "Pair with {name}",
-        "description": "Home Assistant will bond with the Powerpal over Bluetooth and authenticate with its pairing code. Make sure nothing else (an ESP32 gateway or the Powerpal app) is connected to it.",
+        "description": "Home Assistant will bond with the Powerpal over Bluetooth and authenticate with its pairing code. Make sure nothing else (an ESP32 gateway or the Powerpal app) is connected to it.{gateway_note}",
         "data": {
           "pairing_code": "Pairing code",
           "pulses_per_kwh": "Meter pulses per kWh"
         },
         "data_description": {
           "pairing_code": "The 6-digit code on the card that came with your Powerpal, also shown in the Powerpal app.",
-          "pulses_per_kwh": "Printed on your meter as imp/kWh. Usually 1000."
+          "pulses_per_kwh": "Printed on your meter as imp/kWh. Usually 1000. If you're moving from an ESP32 gateway, use the same value it had."
         }
       },
       "reauth_confirm": {
@@ -54,7 +54,7 @@
           "pulses_per_kwh": "Changing this rescales the whole energy total, not just new readings.",
           "poll_interval": "0 keeps Home Assistant connected for live readings. Any other value connects every that many minutes, fetches the readings stored since the last visit, and disconnects, freeing the Bluetooth connection slot in between. Power then updates only at each visit.",
           "notification_interval": "When staying connected: minutes between live readings sent by the Powerpal. 1 is recommended.",
-          "cost_per_kwh": "Flat rate used by the Cost in last reading sensor, in your Home Assistant currency. 0 if you don't need it."
+          "cost_per_kwh": "Flat rate used by the Cost sensor, in your Home Assistant currency. 0 if you don't need it."
         }
       }
     }
@@ -62,31 +62,43 @@
   "entity": {
     "sensor": {
       "energy": {
-        "name": "Energy"
+        "name": "Total Energy"
       },
       "daily_energy": {
-        "name": "Energy today"
-      },
-      "last_pulses": {
-        "name": "Pulses in last reading"
-      },
-      "last_reading": {
-        "name": "Last reading"
-      },
-      "history_oldest": {
-        "name": "Oldest stored reading"
+        "name": "Daily Energy"
       },
       "led_sensitivity": {
-        "name": "LED sensitivity"
+        "name": "LED Sensitivity"
       },
-      "api_key": {
-        "name": "Cloud API key"
+      "last_reading": {
+        "name": "Timestamp"
+      },
+      "last_pulses": {
+        "name": "Pulses"
       },
       "last_watt_hours": {
-        "name": "Watt hours in last reading"
+        "name": "Watt Hours"
       },
       "last_cost": {
-        "name": "Cost in last reading"
+        "name": "Cost"
+      },
+      "device_id": {
+        "name": "Device ID"
+      },
+      "advertisement_rssi": {
+        "name": "Advertisement RSSI"
+      },
+      "advertisement_rate": {
+        "name": "Advertisement Rate"
+      },
+      "last_stall": {
+        "name": "Last Stall"
+      },
+      "history_oldest": {
+        "name": "Oldest Stored Reading"
+      },
+      "last_cloud_upload": {
+        "name": "Last Cloud Upload"
       }
     },
     "button": {
@@ -94,12 +106,15 @@
         "name": "Reconnect"
       },
       "set_time": {
-        "name": "Set clock to now"
+        "name": "Set Clock"
       }
     },
     "switch": {
       "connection": {
-        "name": "Connection"
+        "name": "BLE Connection"
+      },
+      "cloud_upload": {
+        "name": "Cloud Upload"
       }
     }
   },
