@@ -9,7 +9,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 
 from custom_components.powerpal_direct.const import (
@@ -51,6 +52,15 @@ async def test_setup_streams_readings_into_entities(
         "data": {"total_pulses": 2000, "daily_pulses": 0, "daily_date": None, "watermark": T0 - 240},
     }
 
+    # Every value Total Energy is ever written with, from the very first.
+    written: list[str] = []
+
+    @callback
+    def _record(event: Event) -> None:
+        if event.data["entity_id"] == "sensor.powerpal_00002ba7_total_energy" and event.data["new_state"]:
+            written.append(event.data["new_state"].state)
+
+    hass.bus.async_listen(EVENT_STATE_CHANGED, _record)
     with (
         patch.object(FakeClient, "device", device, create=True),
         patch("custom_components.powerpal_direct.coordinator.PowerpalClient", FakeClient),
@@ -61,6 +71,9 @@ async def test_setup_streams_readings_into_entities(
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         await until(lambda: hass.states.get("sensor.powerpal_00002ba7_total_energy").state == "2.015")
+        # The saved total is there from the first write: no dip to 0 that statistics
+        # would read as a meter reset, or the cost sensor would charge as consumption.
+        assert written[0] == "2.0"
         assert entry.state is ConfigEntryState.LOADED
 
         assert hass.states.get("binary_sensor.powerpal_00002ba7_connectivity").state == "on"

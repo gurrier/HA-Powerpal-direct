@@ -207,9 +207,20 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             and time.monotonic() - self.data.power_updated <= self.power_valid_for_s
         )
 
-    async def async_start(self) -> None:
+    async def async_load(self) -> None:
+        """Load the saved totals. Must run before the entities are added.
+
+        Otherwise Total Energy is first written as 0 and then jumps back to the real
+        total: Home Assistant's statistics take the drop as a meter reset and the jump as
+        consumption, and the Energy dashboard's cost sensor, which starts afresh at every
+        restart from the first value it sees, would charge the whole jump at today's price.
+        """
         self.energy.state = EnergyState.from_dict(await self._store.async_load())
         await self._async_carry_on_from_gateway()
+        if self.energy.roll_day(dt_util.now().date()):
+            self._save()
+
+    async def async_start(self) -> None:
         await self.hourly.async_load()
         await self.hourly.async_seed(
             er.async_get(self.hass).async_get_entity_id("sensor", DOMAIN, f"{self.address}_energy")
@@ -218,8 +229,6 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         if (manager := _bluetooth_manager()) is not None:
             self._unsubs.append(manager.async_register_allocation_callback(self._async_on_allocations))
         self._unsubs.append(async_track_time_interval(self.hass, self._async_retry_cloud_upload, timedelta(minutes=5)))
-        if self.energy.roll_day(dt_util.now().date()):
-            self._save()
         self._unsubs.append(
             async_track_time_interval(self.hass, self._async_sample_advertisement_rate, timedelta(minutes=1))
         )
