@@ -87,6 +87,26 @@ def find_gateway_entities(hass: HomeAssistant) -> GatewayEntities:
     return GatewayEntities(available=available, still_present=still_present)
 
 
+def async_take_over_entity_ids(hass: HomeAssistant, address: str, domain: str, gateway: GatewayEntities) -> None:
+    """Rename our newly created entities to the removed gateway's entity IDs.
+
+    Entities ask for the gateway's IDs when they're created, but Home Assistant prefers
+    an ID it remembers for the same entity from an earlier install: if Powerpal Direct
+    was set up before (alongside the gateway, say) and deleted, its old IDs come back.
+    Renaming afterwards wins either way. The recorder then keeps writing to the
+    gateway's history under that ID.
+    """
+    registry = er.async_get(hass)
+    for key, wanted in gateway.available.items():
+        entity_id = registry.async_get_entity_id(wanted.split(".", 1)[0], domain, f"{address}_{key}")
+        if entity_id is None or entity_id == wanted:
+            continue
+        if registry.async_get(wanted) is not None or hass.states.get(wanted) is not None:
+            continue
+        _LOGGER.info("Taking over %s from the ESP32 gateway (was %s)", wanted, entity_id)
+        registry.async_update_entity(entity_id, new_entity_id=wanted)
+
+
 @dataclass(slots=True)
 class GatewayReadings:
     """The gateway's last recorded values, to carry on from."""

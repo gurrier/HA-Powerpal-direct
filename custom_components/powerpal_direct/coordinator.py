@@ -148,6 +148,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._last_record_arrival: float | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._stopping = False
+        self.first_setup = False
         self.gateway = GatewayEntities(available={}, still_present={})
         self.cloud = CloudUploader(hass, entry.entry_id)
         self.hourly = HourlyEnergyStatistic(hass, entry.entry_id, self.address, entry.title)
@@ -215,7 +216,10 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         consumption, and the Energy dashboard's cost sensor, which starts afresh at every
         restart from the first value it sees, would charge the whole jump at today's price.
         """
-        self.energy.state = EnergyState.from_dict(await self._store.async_load())
+        saved = await self._store.async_load()
+        # Nothing saved yet: this config entry is being set up for the first time.
+        self.first_setup = saved is None
+        self.energy.state = EnergyState.from_dict(saved)
         await self._async_carry_on_from_gateway()
         if self.energy.roll_day(dt_util.now().date()):
             self._save()

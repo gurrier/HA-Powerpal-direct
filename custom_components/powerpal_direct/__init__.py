@@ -8,7 +8,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, STORAGE_VERSION
 from .coordinator import PowerpalConfigEntry, PowerpalCoordinator
-from .gateway import find_gateway_entities
+from .gateway import async_take_over_entity_ids, find_gateway_entities
 from .hourly import async_clear_hourly_statistic
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR, Platform.SWITCH]
@@ -21,6 +21,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: PowerpalConfigEntry) -> 
     entry.runtime_data = coordinator
     await coordinator.async_load()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    if coordinator.first_setup:
+        # Only on first setup, so an existing install's entity IDs never change under it.
+        async_take_over_entity_ids(hass, coordinator.address, DOMAIN, coordinator.gateway)
     await coordinator.async_start()
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True

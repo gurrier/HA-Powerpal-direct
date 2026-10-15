@@ -107,6 +107,11 @@ async def test_takes_over_entity_ids_and_carries_on(hass: HomeAssistant) -> None
         hass.states.async_set(entity_id, "unavailable")
     await async_wait_recording_done(hass)
     remove_gateway(hass, registry)
+    # Powerpal Direct was set up once before, alongside the gateway, then deleted: Home
+    # Assistant remembers those entities and would hand their old IDs back.
+    for key, object_id in (("energy", "powerpal_00002ba7_total_energy"), ("power", "powerpal_00002ba7_power")):
+        earlier = registry.async_get_or_create("sensor", DOMAIN, f"{ADDRESS}_{key}", suggested_object_id=object_id)
+        registry.async_remove(earlier.entity_id)
 
     device = FakePowerpal()
     device.add_minutes(T0 - 600, 10)
