@@ -78,3 +78,23 @@ def test_state_round_trips() -> None:
 
 def test_a_saved_zero_watermark_means_none() -> None:
     assert EnergyState.from_dict({"total_pulses": 0, "watermark": 0}).watermark is None
+
+
+def test_records_re_stamped_by_a_clock_nudge_are_not_counted_twice() -> None:
+    # As seen on a real Powerpal: while released, something nudged its clock forward a
+    # second, twice, and the replay included already-counted minutes re-stamped.
+    base = ts(2026, 10, 16, 12, 33)
+    acc = EnergyAccumulator(EnergyState(watermark=base, total_pulses=73), TZ)
+    replayed = [
+        (base + 1, 17),  # 12:33:00 again, re-stamped
+        (base + 61, 16),
+        (base + 121, 15),
+        (base + 181, 14),
+        (base + 182, 14),  # 12:36:01 again, re-stamped
+    ]
+    counted = [acc.add(Measurement(t, p)) for t, p in replayed]
+    assert [c is not None for c in counted] == [False, True, True, True, False]
+    assert acc.state.total_pulses == 73 + 16 + 15 + 14
+    assert acc.watermark == base + 182
+    # The next real minute, on the shifted grid, still counts, a minute after.
+    assert acc.add(Measurement(base + 242, 13)) is not None

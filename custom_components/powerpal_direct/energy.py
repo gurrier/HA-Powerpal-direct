@@ -21,6 +21,11 @@ from .protocol import Measurement
 # from the new clock, rather than ignoring every record until it catches up again.
 CLOCK_RESET_THRESHOLD_S = 24 * 3600
 
+# Real records are a minute apart. One that follows the last counted record more closely
+# than this is that same minute, re-stamped because the Powerpal's clock was nudged
+# (seen when the phone app connected and set it: 12:33:00 came back as 12:33:01).
+MIN_RECORD_SPACING_S = 30
+
 
 @dataclass(slots=True)
 class EnergyState:
@@ -87,6 +92,11 @@ class EnergyAccumulator:
                 if state.watermark - measurement.timestamp < CLOCK_RESET_THRESHOLD_S:
                     return None
                 clock_reset = True
+            elif measurement.timestamp - state.watermark < MIN_RECORD_SPACING_S:
+                # Already counted under its old timestamp. Follow the new one, so the
+                # records after it, on the shifted minute grid, line up.
+                state.watermark = measurement.timestamp
+                return None
             else:
                 interval_s = measurement.timestamp - state.watermark
 

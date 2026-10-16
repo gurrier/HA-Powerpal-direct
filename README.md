@@ -237,6 +237,12 @@ hours), Powerpal Direct sets it only when needed:
 - when the clock has drifted more than a minute from Home Assistant's, judged from when
   live readings arrive (shown as **Clock Offset**), at most every 6 hours.
 
+Other things can set the Powerpal's clock too, notably the Powerpal phone app, which syncs
+in the background whenever it can reach the Powerpal (for instance while **BLE Connection**
+is off). Setting the clock re-stamps the Powerpal's stored readings a few seconds later, so
+the same minute can come back with a new timestamp. Powerpal Direct recognises those (real
+readings are a minute apart) and doesn't count them twice.
+
 **Set Clock** (off by default) sets it on demand. Reading `59DA0004` back doesn't tell you
 the time: it returns the last value written.
 
