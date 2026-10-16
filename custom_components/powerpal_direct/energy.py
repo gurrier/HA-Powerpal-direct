@@ -22,8 +22,9 @@ from .protocol import Measurement
 CLOCK_RESET_THRESHOLD_S = 24 * 3600
 
 # Real records are a minute apart. One that follows the last counted record more closely
-# than this is that same minute, re-stamped because the Powerpal's clock was nudged
-# (seen when the phone app connected and set it: 12:33:00 came back as 12:33:01).
+# than this is that same minute, re-stamped: while nothing is connected the Powerpal's
+# clock gains about a second a minute, and it re-stamps its stored records when it
+# re-aligns on reconnecting (seen on a real one: 12:33:00 came back as 12:33:01).
 MIN_RECORD_SPACING_S = 30
 
 
@@ -78,6 +79,11 @@ class EnergyAccumulator:
     def set_watermark(self, timestamp: int) -> None:
         """Start counting after `timestamp`, e.g. on first setup, to skip old history."""
         self.state.watermark = timestamp
+
+    def shift_watermark(self, seconds: int) -> None:
+        """Move the watermark with the Powerpal's clock after it has been set by `seconds`."""
+        if self.state.watermark is not None:
+            self.state.watermark += seconds
 
     def local_date(self, timestamp: int) -> date:
         return datetime.fromtimestamp(timestamp, self._tz).date()

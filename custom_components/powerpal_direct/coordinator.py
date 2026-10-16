@@ -42,7 +42,7 @@ from .const import (
 from .energy import EnergyAccumulator, EnergyState
 from .gateway import GatewayEntities, async_last_gateway_readings
 from .hourly import HourlyEnergyStatistic
-from .protocol import RECORD_INTERVAL_S, Measurement, PowerpalProtocolError
+from .protocol import RECORD_INTERVAL_S, HistoryRange, Measurement, PowerpalProtocolError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -164,15 +164,14 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._clock_correction_due = False
         self._last_live_arrival: float | None = None
         self._connected_at: float | None = None
-        self._ads_this_minute = 0
         # Why the last connection was lost, and when its last reading arrived (wall time),
         # reported as Last Stall once readings resume.
         self._drop_reason: str | None = None
         self._drop_since: float | None = None
         self._last_record_wall: float | None = None
         self._intentional_drop = False
-        # Off releases the Powerpal (e.g. for the phone app) until switched back on. Like the
-        # gateway's connection switch, it's back on after a restart.
+        # Off releases the Powerpal (e.g. for the phone app or an ESP32 gateway) until
+        # switched back on. The switch entity restores it across restarts.
         self.connection_enabled = True
         self._warned_passive_only = False
 
@@ -299,9 +298,9 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     ) -> None:
         # A connected Powerpal stops advertising, so any advertisement means it's free.
         self._advertised.set()
-        self._ads_this_minute += 1
-        if not self.data.connected:
+        if not self.data.connected and service_info.rssi != self.data.advertisement_rssi:
             self.data.advertisement_rssi = service_info.rssi
+            self.async_update_listeners()
 
     @callback
     def _async_sample_advertisement_rate(self, now: datetime) -> None:
@@ -310,7 +309,6 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         Home Assistant only passes on advertisements that change, so they can't be counted.
         It does track when each device was last heard, and learns how often it advertises.
         """
-        self._ads_this_minute = 0
         info = bluetooth.async_last_service_info(self.hass, self.address, connectable=False)
         if info is None or time.monotonic() - info.time > 60:
             rate: int | None = 0
@@ -568,6 +566,12 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         """One connection: set up, catch up on history, then (if persistent) stream."""
         self._disconnected.clear()
         self._catch_up_requested.clear()
+        # A switch-off or reconnect requested while nothing was connected would otherwise
+        # make this session's eventual drop look intentional.
+        self._intentional_drop = False
+        # Anything held back at the end of the last session is in the Powerpal's history,
+        # which catch-up fetches; counting it now would skip the gap check.
+        self._pending_live = []
         client = PowerpalClient(
             ble_device,
             self._pairing_code,
@@ -584,7 +588,8 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         api_key = await client.authenticate()
         ir.async_delete_issue(self.hass, DOMAIN, self._bond_issue_id)
         clock_set_this_session = False
-        if (await client.read_history_range()).newest == 0:
+        history = await client.read_history_range()
+        if history.newest == 0:
             await self._async_set_clock(client, "its history is empty, as after a reset")
             clock_set_this_session = True
         if self.persistent:
@@ -604,7 +609,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._clock_offsets.clear()
         self._last_live_arrival = None
 
-        await self._async_catch_up(client, None)
+        await self._async_catch_up(client, None, history)
         self._report_recovered_stall()
         if not self.persistent:
             return
@@ -634,21 +639,31 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
                 clock_set_this_session = True
             if self._clock_correction_due:
                 self._clock_correction_due = False
-                await self._async_set_clock(client, f"it had drifted {self.data.clock_offset:+.0f} s")
+                offset = self.data.clock_offset or 0.0
+                direction = "behind" if offset > 0 else "ahead of"
+                await self._async_set_clock(client, f"it was {abs(offset):.0f} s {direction} Home Assistant's")
+                # The Powerpal's timestamps move by the same amount, stored ones included.
+                # Moving the watermark with them keeps the next reading a minute past it;
+                # otherwise a clock set back would make new readings look already counted.
+                self.energy.shift_watermark(round(offset))
+                self._save()
             if time.monotonic() - last_battery > BATTERY_REFRESH_S:
                 last_battery = time.monotonic()
                 if (battery := await client.read_battery()) is not None:
                     self._on_battery(battery)
         _LOGGER.debug("%s: Disconnected", self.address)
 
-    async def _async_catch_up(self, client: PowerpalClient, window: tuple[int, int] | None) -> None:
+    async def _async_catch_up(
+        self, client: PowerpalClient, window: tuple[int, int] | None, history: HistoryRange | None = None
+    ) -> None:
         """Replay stored records the totals haven't counted yet.
 
         With no window, everything from the watermark to the newest stored record is
         requested. The Powerpal clamps a start older than its oldest record, so a long
         outage needs no special handling beyond noting what was lost.
         """
-        history = await client.read_history_range()
+        if history is None:
+            history = await client.read_history_range()
         if history.newest == 0:
             # Nothing stored, as just after the Powerpal resets. Live readings still arrive,
             # and the first one starts the count.
@@ -755,6 +770,8 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         await client.set_time(int(time.time()))
         self._clock_set_at = time.monotonic()
         self._clock_offsets.clear()
+        # Unknown again until enough readings have arrived under the new setting.
+        self.data.clock_offset = None
 
     @callback
     def _note_clock_offset(self, measurement: Measurement) -> None:

@@ -393,3 +393,72 @@ async def test_new_install_imports_stored_history_into_hourly_only(hass: HomeAss
     # ...but the new total still starts from now.
     assert coordinator.energy.state.total_pulses == 0
     assert coordinator.energy.watermark == T0 - 60
+
+
+async def test_drift_correction_moves_the_watermark(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    newest = device.history_range.newest
+    coordinator.energy.state = EnergyState(watermark=newest)
+    session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+    await until(lambda: coordinator.data.connected)
+
+    # The Powerpal's clock is 2 minutes ahead: readings arrive 2 minutes "early".
+    with patch("custom_components.powerpal_direct.coordinator.time.time") as now:
+        for minute in range(1, 8):
+            now.return_value = newest + minute * 60 + 60 - 120
+            device.client.notify(Measurement(newest + minute * 60, 1))
+    assert coordinator.data.clock_offset == -120
+    assert coordinator._clock_correction_due
+    watermark_before = coordinator.energy.watermark
+
+    coordinator._catch_up_requested.set()
+    await until(lambda: len(device.clock_writes) == 1)
+    assert coordinator.energy.watermark == watermark_before - 120
+    assert coordinator.data.clock_offset is None  # unknown again until re-measured
+    await device.client.disconnect()
+    await asyncio.wait_for(session, 1)
+
+
+async def test_switch_off_while_disconnected_does_not_hide_the_next_real_drop(
+    hass: HomeAssistant, device: FakePowerpal
+) -> None:
+    coordinator = make_coordinator(hass)
+    coordinator.energy.state = EnergyState(watermark=device.history_range.newest)
+    # Switched off and on again while nothing was connected: the flag would linger.
+    await coordinator.async_set_connection_enabled(False)
+    await coordinator.async_set_connection_enabled(True)
+    assert coordinator._intentional_drop
+
+    session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+    await until(lambda: coordinator.data.connected)
+    assert not coordinator._intentional_drop
+    coordinator._connected_at = time.monotonic() - 100
+    await device.client.disconnect()
+    await asyncio.wait_for(session, 1)
+    coordinator._note_drop()
+    assert coordinator._drop_reason == "the link dropped"
+
+
+async def test_readings_held_back_from_a_previous_session_are_not_counted_blindly(
+    hass: HomeAssistant, device: FakePowerpal
+) -> None:
+    coordinator = make_coordinator(hass, poll_interval=15)
+    newest = device.history_range.newest
+    coordinator.energy.state = EnergyState(watermark=newest - 300)
+    # Left over from a session that ended mid-flight. It's also in the Powerpal's history.
+    coordinator._pending_live = [Measurement(newest, 5)]
+    await coordinator._async_session(BLE_DEVICE)
+    # Counted exactly once, via catch-up, along with the minutes before it.
+    assert device.history_requests == [(newest - 299, newest)]
+    assert coordinator.energy.state.total_pulses == 5 * 5
+
+
+async def test_advertisement_rssi_updates_its_sensor(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    updates: list[None] = []
+    coordinator.async_add_listener(lambda: updates.append(None))
+    coordinator._async_on_advertisement(MagicMock(rssi=-61), MagicMock())
+    coordinator._async_on_advertisement(MagicMock(rssi=-61), MagicMock())
+    coordinator._async_on_advertisement(MagicMock(rssi=-58), MagicMock())
+    assert coordinator.data.advertisement_rssi == -58
+    assert len(updates) == 2  # once per change, not per advertisement

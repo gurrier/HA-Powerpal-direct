@@ -98,3 +98,22 @@ def test_records_re_stamped_by_a_clock_nudge_are_not_counted_twice() -> None:
     assert acc.watermark == base + 182
     # The next real minute, on the shifted grid, still counts, a minute after.
     assert acc.add(Measurement(base + 242, 13)) is not None
+
+
+def test_watermark_moves_with_a_clock_correction_so_nothing_is_lost() -> None:
+    # The Powerpal's clock was 120 s ahead; after it's set back, its next readings carry
+    # timestamps 120 s earlier than before. Without moving the watermark they'd all look
+    # already counted until the clock caught up again.
+    base = ts(2026, 10, 16, 12, 0)
+    acc = EnergyAccumulator(EnergyState(watermark=base, total_pulses=10), TZ)
+    acc.shift_watermark(-120)
+    assert acc.watermark == base - 120
+    result = acc.add(Measurement(base - 60, 7))  # the next minute, on the corrected clock
+    assert result is not None and result.interval_s == 60
+    assert acc.state.total_pulses == 17
+
+
+def test_shift_watermark_with_nothing_counted_yet() -> None:
+    acc = EnergyAccumulator(EnergyState(), TZ)
+    acc.shift_watermark(60)
+    assert acc.watermark is None

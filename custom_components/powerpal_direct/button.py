@@ -26,7 +26,7 @@ BUTTONS: tuple[PowerpalButtonDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         press_fn=lambda c: c.async_reconnect(),
     ),
-    # Off by default: the clock is already set on every connect and every 6 hours.
+    # Off by default: the clock is kept right automatically; this is for a manual nudge.
     PowerpalButtonDescription(
         key="set_time",
         translation_key="set_time",
