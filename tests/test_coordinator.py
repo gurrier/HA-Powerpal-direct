@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Generator
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -244,14 +245,14 @@ async def test_clock_corrected_only_when_it_drifts(hass: HomeAssistant, device: 
 
     # Readings arriving on time: about 60 s after their own timestamp.
     with patch("custom_components.powerpal_direct.coordinator.time.time") as now:
-        for minute in range(1, 6):
+        for minute in range(1, 7):
             now.return_value = newest + minute * 60 + 60 + 2
             device.client.notify(Measurement(newest + minute * 60, 1))
         assert coordinator.data.clock_offset == 2
         assert not coordinator._clock_correction_due
 
         # The Powerpal's clock falls 2 minutes behind.
-        for minute in range(6, 12):
+        for minute in range(7, 13):
             now.return_value = newest + minute * 60 + 60 + 120
             device.client.notify(Measurement(newest + minute * 60, 1))
         assert coordinator.data.clock_offset == 120
@@ -269,7 +270,8 @@ async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, dev
     coordinator.energy.state = EnergyState(watermark=device.history_range.newest - 180)
     session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
     await until(lambda: coordinator.data.connected)
-    # The link drops on its own: not requested, not the switch.
+    # The link drops on its own, a while after connecting: not requested, not the switch.
+    coordinator._connected_at = time.monotonic() - 100
     coordinator.data.last_error = None
     await device.client.disconnect()
     await asyncio.wait_for(session, 1)
@@ -293,16 +295,51 @@ async def test_switching_off_is_not_a_stall(hass: HomeAssistant, device: FakePow
     assert coordinator._drop_reason is None
 
 
-async def test_advertisements_while_free(hass: HomeAssistant, device: FakePowerpal) -> None:
+async def test_advertisement_rate_from_how_often_it_is_heard(hass: HomeAssistant, device: FakePowerpal) -> None:
     coordinator = make_coordinator(hass)
-    info = MagicMock(rssi=-61)
-    for _ in range(3):
-        coordinator._async_on_advertisement(info, MagicMock())
+    coordinator._async_on_advertisement(MagicMock(rssi=-61), MagicMock())
     assert coordinator.data.advertisement_rssi == -61
-    coordinator._async_sample_advertisement_rate(dt_util.now())
-    assert coordinator.data.advertisement_rate == 3
-    coordinator._async_sample_advertisement_rate(dt_util.now())
-    assert coordinator.data.advertisement_rate == 0
+
+    base = "custom_components.powerpal_direct.coordinator.bluetooth"
+    heard = MagicMock(time=time.monotonic() - 5)
+    with (
+        patch(f"{base}.async_last_service_info", return_value=heard),
+        patch(f"{base}.async_get_learned_advertising_interval", return_value=2.0),
+    ):
+        coordinator._async_sample_advertisement_rate(dt_util.now())
+        assert coordinator.data.advertisement_rate == 30
+    with patch(f"{base}.async_last_service_info", return_value=MagicMock(time=time.monotonic() - 120)):
+        coordinator._async_sample_advertisement_rate(dt_util.now())
+        assert coordinator.data.advertisement_rate == 0  # not heard: the link is up
+    with (
+        patch(f"{base}.async_last_service_info", return_value=heard),
+        patch(f"{base}.async_get_learned_advertising_interval", return_value=None),
+    ):
+        coordinator._async_sample_advertisement_rate(dt_util.now())
+        assert coordinator.data.advertisement_rate is None  # heard, interval not learned yet
+
+
+async def test_a_burst_of_late_readings_does_not_skew_the_clock(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    newest = device.history_range.newest
+    coordinator.energy.state = EnergyState(watermark=newest)
+    with patch("custom_components.powerpal_direct.coordinator.time.time", return_value=newest + 20 * 60):
+        # Ten minutes of stored readings, all arriving at once on reconnecting.
+        for minute in range(1, 11):
+            coordinator._note_clock_offset(Measurement(newest + minute * 60, 1))
+    assert coordinator.data.clock_offset is None
+    assert not coordinator._clock_correction_due
+
+
+async def test_a_drop_just_after_connecting_is_not_a_stall(hass: HomeAssistant, device: FakePowerpal) -> None:
+    coordinator = make_coordinator(hass)
+    coordinator.data.connected = True
+    coordinator._connected_at = time.monotonic() - 3
+    coordinator._note_drop()
+    assert coordinator._drop_reason is None
+    coordinator._connected_at = time.monotonic() - 100
+    coordinator._note_drop()
+    assert coordinator._drop_reason == "the link dropped"
 
 
 async def test_connected_via_follows_the_slot_holding_the_connection(hass: HomeAssistant, device: FakePowerpal) -> None:

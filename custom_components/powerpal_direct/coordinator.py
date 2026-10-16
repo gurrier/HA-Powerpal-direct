@@ -69,6 +69,13 @@ CLOCK_DRIFT_LIMIT_S = 60
 CLOCK_MIN_INTERVAL_S = 6 * 3600
 CLOCK_OFFSET_SAMPLES = 10
 CLOCK_OFFSET_MIN_SAMPLES = 5
+# A live reading only says something about the clock if it came a normal minute after the
+# previous one. Readings arriving in a burst (stored ones, sent on reconnecting) are late
+# by however long the connection was down, which says nothing about the clock.
+CLOCK_SAMPLE_MIN_SPACING_S = 45
+# The link often drops once within seconds of a new connection (seen on Windows and on
+# Home Assistant); that isn't a stall worth reporting.
+POST_CONNECT_DROP_S = 30
 # Beyond this, averaging pulses over the gap wouldn't say anything about current power.
 MAX_POWER_INTERVAL_S = 300
 # History replies arrive at 20-70 records/s; give up on a burst that goes quiet this long.
@@ -155,6 +162,8 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._clock_offsets: deque[float] = deque(maxlen=CLOCK_OFFSET_SAMPLES)
         self._clock_set_at: float | None = None
         self._clock_correction_due = False
+        self._last_live_arrival: float | None = None
+        self._connected_at: float | None = None
         self._ads_this_minute = 0
         # Why the last connection was lost, and when its last reading arrived (wall time),
         # reported as Last Stall once readings resume.
@@ -296,8 +305,22 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
 
     @callback
     def _async_sample_advertisement_rate(self, now: datetime) -> None:
-        self.data.advertisement_rate, self._ads_this_minute = self._ads_this_minute, 0
-        self.async_update_listeners()
+        """Advertisements per minute, as the gateway reported: non-zero means the link was down.
+
+        Home Assistant only passes on advertisements that change, so they can't be counted.
+        It does track when each device was last heard, and learns how often it advertises.
+        """
+        self._ads_this_minute = 0
+        info = bluetooth.async_last_service_info(self.hass, self.address, connectable=False)
+        if info is None or time.monotonic() - info.time > 60:
+            rate: int | None = 0
+        elif interval := bluetooth.async_get_learned_advertising_interval(self.hass, self.address):
+            rate = round(60 / interval)
+        else:
+            rate = None  # heard, but not long enough to know how often
+        if rate != self.data.advertisement_rate:
+            self.data.advertisement_rate = rate
+            self.async_update_listeners()
 
     async def _async_carry_on_from_gateway(self) -> None:
         """On first setup after an ESP32 gateway, start from where it left off.
@@ -397,6 +420,13 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         """Remember why a live connection ended, unless it was meant to."""
         intentional, self._intentional_drop = self._intentional_drop, False
         if not self.data.connected or not self.persistent or self._stopping or intentional:
+            return
+        if (
+            self._drop_reason is None
+            and self._connected_at is not None
+            and time.monotonic() - self._connected_at < POST_CONNECT_DROP_S
+        ):
+            _LOGGER.debug("%s: Link dropped just after connecting; not counted as a stall", self.address)
             return
         if self._drop_reason is None:
             self._drop_reason = f"disconnected: {self.data.last_error}" if self.data.last_error else "the link dropped"
@@ -569,8 +599,10 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self.async_update_listeners()
         # Staleness is judged per connection; catch-up covers whatever came before.
         connected_at = time.monotonic()
+        self._connected_at = connected_at
         self._last_record_arrival = connected_at
         self._clock_offsets.clear()
+        self._last_live_arrival = None
 
         await self._async_catch_up(client, None)
         self._report_recovered_stall()
@@ -678,8 +710,19 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             unrecoverable_minutes=unrecoverable,
             finished_at=dt_util.utcnow(),
         )
-        level = logging.INFO if len(records) >= expected else logging.WARNING
-        _LOGGER.log(level, "%s: Caught up %s of %s stored readings", self.address, len(records), expected)
+        # On reconnecting, the Powerpal often sends the readings it couldn't deliver by
+        # itself, before they're asked for. Only a gap that's still there is worth a warning.
+        watermark = self.energy.watermark
+        still_missing = watermark is None or watermark < end - RECORD_INTERVAL_S
+        if len(records) >= expected or not still_missing:
+            _LOGGER.info(
+                "%s: Caught up: %s of %s readings replayed, the rest had already arrived",
+                self.address,
+                len(records),
+                expected,
+            )
+        else:
+            _LOGGER.warning("%s: Caught up only %s of %s stored readings", self.address, len(records), expected)
 
     async def _async_fetch_history(self, client: PowerpalClient, start: int, end: int) -> list[Measurement]:
         """Have the Powerpal replay its stored readings in [start, end], and collect them.
@@ -723,7 +766,11 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         """
         if self.batch_minutes != 1:
             return
-        self._clock_offsets.append(time.time() - (measurement.timestamp + RECORD_INTERVAL_S))
+        arrival = time.time()
+        previous, self._last_live_arrival = self._last_live_arrival, arrival
+        if previous is None or arrival - previous < CLOCK_SAMPLE_MIN_SPACING_S:
+            return
+        self._clock_offsets.append(arrival - (measurement.timestamp + RECORD_INTERVAL_S))
         if len(self._clock_offsets) < CLOCK_OFFSET_MIN_SAMPLES:
             return
         offset = statistics.median(self._clock_offsets)
