@@ -48,6 +48,8 @@ class HourlyLedger:
         self.hours: dict[int, int] = dict(hours or {})
         # The earliest hour changed since the last write, if any.
         self.dirty_from: int | None = None
+        # Pulses folded into the baseline since the last rows() call.
+        self._folded = 0
 
     def add(self, timestamp: int, pulses: int) -> None:
         hour = hour_of(timestamp)
@@ -56,6 +58,9 @@ class HourlyLedger:
 
     def rows(self, pulses_per_kwh: float, since: int | None = None) -> list[tuple[int, float]]:
         """(hour start, cumulative kWh at the end of that hour), from `since` onwards."""
+        if self._folded:
+            self.baseline_kwh = (self.baseline_kwh or 0.0) + self._folded / pulses_per_kwh
+            self._folded = 0
         total = self.baseline_kwh or 0.0
         rows = []
         for hour in sorted(self.hours):
@@ -63,6 +68,11 @@ class HourlyLedger:
             if since is None or hour >= since:
                 rows.append((hour, round(total, 6)))
         return rows
+
+    def fold(self, pulses: int) -> None:
+        """Add pulses to the running total without a row of their own. Needs a flush."""
+        self._folded += pulses
+        self.dirty_from = self.dirty_from if self.dirty_from is not None else min(self.hours, default=0)
 
     def prune(self, now: int, pulses_per_kwh: float) -> None:
         """Fold hours older than KEEP_HOURS into the baseline."""
@@ -137,6 +147,11 @@ class HourlyEnergyStatistic:
         self._save()
 
     def add(self, timestamp: int, pulses: int) -> None:
+        if hour_of(timestamp) < hour_of(int(dt_util.utcnow().timestamp())) - KEEP_HOURS * HOUR_S:
+            # Older than anything kept by the hour (a Powerpal whose clock was unset stamps
+            # near 1970): it still belongs in the total, but not as a row of its own.
+            self.ledger.fold(pulses)
+            return
         self.ledger.add(timestamp, pulses)
 
     def flush(self, pulses_per_kwh: float) -> None:

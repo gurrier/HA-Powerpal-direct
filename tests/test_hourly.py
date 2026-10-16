@@ -133,3 +133,13 @@ async def test_removing_the_entry_clears_the_statistic(hass: HomeAssistant) -> N
 
     async_clear_hourly_statistic(hass, "DF:5C:55:00:00:01")
     assert await _hourly_sums(hass, statistic.statistic_id) == []
+
+
+async def test_an_ancient_timestamp_joins_the_total_without_a_row(hass: HomeAssistant) -> None:
+    statistic = HourlyEnergyStatistic(hass, "entry", "DF:5C:55:00:00:01", "Powerpal 00002ba7")
+    await statistic.async_seed(None)
+    statistic.add(60, 500)  # a Powerpal stamping near 1970
+    statistic.add(H0 + 60, 250)
+    statistic.flush(1000)
+    assert statistic.ledger.baseline_kwh == 0.5
+    assert await _hourly_sums(hass, statistic.statistic_id) == [(dt_util.utc_from_timestamp(H0), 0.75)]

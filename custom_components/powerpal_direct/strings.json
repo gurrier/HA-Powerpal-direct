@@ -22,7 +22,14 @@
       },
       "reauth_confirm": {
         "title": "Re-enter the pairing code",
-        "description": "{name} rejected its pairing code.",
+        "description": "Home Assistant isn't getting readings from {name}. Check the 6-digit pairing code and enter it again. The Powerpal accepts a wrong code without complaint, so Home Assistant can't check it here: readings arriving a minute or two after reconnecting is the confirmation.",
+        "data": {
+          "pairing_code": "Pairing code"
+        }
+      },
+      "reconfigure": {
+        "title": "Change the pairing code",
+        "description": "Home Assistant isn't getting readings from {name}. Check the 6-digit pairing code and enter it again. The Powerpal accepts a wrong code without complaint, so Home Assistant can't check it here: readings arriving a minute or two after reconnecting is the confirmation.",
         "data": {
           "pairing_code": "Pairing code"
         }
@@ -38,7 +45,8 @@
     "abort": {
       "already_configured": "This Powerpal is already set up.",
       "no_devices_found": "No Powerpal found. A Powerpal stops advertising while anything is connected to it, so turn off any ESP32 gateway and close the Powerpal app, then try again.",
-      "reauth_successful": "The pairing code was updated."
+      "reauth_successful": "The pairing code was updated.",
+      "reconfigure_successful": "The pairing code was updated."
     }
   },
   "options": {
@@ -128,6 +136,10 @@
     "bond_failed": {
       "title": "{name} can't bond over Bluetooth",
       "description": "Home Assistant couldn't bond with {name}, and the Powerpal answers nothing until it's bonded. Error: {error}\n\nThe most reliable fix is to connect through an ESPHome Bluetooth proxy (`bluetooth_proxy: active: true`), which bonds the same way an ESP32 gateway did. If you're using a local adapter, also remove the Powerpal from the host's Bluetooth (`bluetoothctl remove <address>`), since a failed attempt can leave a stale record that blocks later connections. Retries happen every 30 minutes, or press Reconnect."
+    },
+    "no_readings": {
+      "title": "{name} is connected but sends no readings",
+      "description": "Home Assistant connected to {name} {count} times in a row, authenticated, and subscribed, but not a single reading arrived.\n\nThe most likely cause is a wrong pairing code: the Powerpal accepts the connection either way, but only sends readings when the code is right. Check the 6-digit code on the card that came with the Powerpal (also shown in the Powerpal app), then enter it again under Settings → Devices & services → Powerpal Direct → ⋮ → Reconfigure.\n\nThis issue clears itself once readings arrive."
     }
   }
 }

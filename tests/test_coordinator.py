@@ -462,3 +462,31 @@ async def test_advertisement_rssi_updates_its_sensor(hass: HomeAssistant, device
     coordinator._async_on_advertisement(MagicMock(rssi=-58), MagicMock())
     assert coordinator.data.advertisement_rssi == -58
     assert len(updates) == 2  # once per change, not per advertisement
+
+
+async def test_silent_connections_raise_a_repair_issue_cleared_by_a_reading(
+    hass: HomeAssistant, device: FakePowerpal
+) -> None:
+    from custom_components.powerpal_direct.coordinator import SILENT_SESSIONS_BEFORE_ISSUE
+
+    coordinator = make_coordinator(hass)
+    issue_id = f"no_readings_{coordinator.config_entry.entry_id}"
+    coordinator.energy.state = EnergyState(watermark=device.history_range.newest)
+    with patch("custom_components.powerpal_direct.coordinator.STALE_GRACE_S", -59.5):
+        for _ in range(SILENT_SESSIONS_BEFORE_ISSUE):
+            session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+            await until(lambda: coordinator.data.connected)
+            await asyncio.sleep(0.6)
+            coordinator._catch_up_requested.set()  # wakes the loop to run its checks
+            await asyncio.wait_for(session, 2)  # returns on the stale check, with no reading
+            coordinator._set_connected(False)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+    # A reading at last: the issue goes.
+    session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
+    await until(lambda: coordinator.data.connected)
+    device.client.notify(Measurement(device.history_range.newest + 60, 3))
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    assert coordinator._silent_sessions == 0
+    await device.client.disconnect()
+    await asyncio.wait_for(session, 1)

@@ -189,7 +189,15 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        entry = self._get_reauth_entry()
+        return await self._async_step_new_code(self._get_reauth_entry(), "reauth_confirm", user_input)
+
+    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Enter a new pairing code, e.g. after the no-readings repair issue."""
+        return await self._async_step_new_code(self._get_reconfigure_entry(), "reconfigure", user_input)
+
+    async def _async_step_new_code(
+        self, entry: PowerpalConfigEntry, step_id: str, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             code = _parse_pairing_code(user_input[CONF_PAIRING_CODE])
@@ -205,7 +213,7 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
                     return self.async_update_reload_and_abort(entry, data_updates={CONF_PAIRING_CODE: code})
 
         return self.async_show_form(
-            step_id="reauth_confirm",
+            step_id=step_id,
             data_schema=vol.Schema({vol.Required(CONF_PAIRING_CODE): PAIRING_CODE_SELECTOR}),
             errors=errors,
             description_placeholders={"name": entry.title},

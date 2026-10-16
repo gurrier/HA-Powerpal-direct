@@ -139,3 +139,24 @@ async def test_unbonded_write_request_leads_to_bonding(bleak_client: MagicMock) 
     assert await client.authenticate() == API_KEY
     bleak_client.pair.assert_awaited_once()
     assert [c.kwargs["response"] for c in bleak_client.write_gatt_char.await_args_list] == [True, True]
+
+
+async def test_link_dropping_during_auth_is_transient_not_a_bad_code(bleak_client: MagicMock) -> None:
+    # The first attempt fails, the explicit bond goes through, and then the link drops
+    # before the second attempt can read anything back.
+    attempts = 0
+
+    async def _read(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise BleakError("Protocol Error 0x0e: Unlikely Error")
+        bleak_client.is_connected = False
+        raise BleakError("Not connected")
+
+    bleak_client.read_gatt_char.side_effect = _read
+    client = PowerpalClient(BLE_DEVICE, PAIRING_CODE)
+    await client.connect()
+    with pytest.raises(BleakError) as raised:
+        await client.authenticate()
+    assert not isinstance(raised.value, PowerpalAuthError)

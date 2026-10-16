@@ -193,3 +193,15 @@ async def test_no_gateway_no_note(hass: HomeAssistant, validate: AsyncMock) -> N
         DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
     )
     assert result["description_placeholders"]["gateway_note"] == ""
+
+
+async def test_reconfigure_enters_a_new_code(hass: HomeAssistant, validate: AsyncMock) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=ADDRESS, data={CONF_PAIRING_CODE: 111111})
+    entry.add_to_hass(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["step_id"] == "reconfigure"
+    with patch(f"{FLOW}.bluetooth.async_last_service_info", return_value=service_info()):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PAIRING_CODE: "123123"})
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_PAIRING_CODE] == 123123

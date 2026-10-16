@@ -13,7 +13,7 @@ Assistant remembers removed entities, so they're still found after the device is
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 from homeassistant.core import HomeAssistant
@@ -107,6 +107,22 @@ def async_take_over_entity_ids(hass: HomeAssistant, address: str, domain: str, g
         registry.async_update_entity(entity_id, new_entity_id=wanted)
 
 
+def _recent_states(hass: HomeAssistant, entity_id: str, limit: int):
+    """The newest `limit` recorded states of an entity, newest first. Recorder thread only."""
+    from homeassistant.components.recorder.history import state_changes_during_period
+
+    found = state_changes_during_period(
+        hass,
+        dt_util.utcnow() - timedelta(days=GATEWAY_HISTORY_DAYS),
+        entity_id=entity_id,
+        no_attributes=True,
+        descending=True,
+        limit=limit,
+        include_start_time_state=False,
+    )
+    return found.get(entity_id, [])
+
+
 @dataclass(slots=True)
 class GatewayReadings:
     """The gateway's last recorded values, to carry on from."""
@@ -125,12 +141,10 @@ async def async_last_gateway_readings(hass: HomeAssistant, entity_ids: dict[str,
         return readings
 
     from homeassistant.components.recorder import get_instance
-    from homeassistant.components.recorder.history import get_last_state_changes
 
     def _last(entity_id: str) -> tuple[str, datetime] | None:
         # The newest state that was an actual value, skipping unavailable/unknown.
-        states = get_last_state_changes(hass, 20, entity_id).get(entity_id, [])
-        for state in reversed(states):
+        for state in _recent_states(hass, entity_id, 20):
             if state.state not in ("unknown", "unavailable", ""):
                 return state.state, state.last_changed
         return None
@@ -182,6 +196,9 @@ COMMON_PULSES_PER_KWH = (
 )
 MIN_PULSES_FOR_RATE = 50
 RATE_HISTORY_STATES = 60
+# How far back to look for a gateway's recorded states. Newest first with a limit, so the
+# recorder can use its index rather than scan the table.
+GATEWAY_HISTORY_DAYS = 7
 
 
 @dataclass(slots=True)
@@ -235,14 +252,13 @@ async def async_detect_gateway_rates(hass: HomeAssistant, gateway: GatewayEntiti
         return GatewayRates()
 
     from homeassistant.components.recorder import get_instance
-    from homeassistant.components.recorder.history import get_last_state_changes
 
     def _numbers(entity_id: str | None) -> dict[int, float]:
         """Recent numeric states, keyed by the second they were recorded."""
         if entity_id is None:
             return {}
         values: dict[int, float] = {}
-        for state in get_last_state_changes(hass, RATE_HISTORY_STATES, entity_id).get(entity_id, []):
+        for state in _recent_states(hass, entity_id, RATE_HISTORY_STATES):
             try:
                 values[int(state.last_updated.timestamp())] = float(state.state)
             except ValueError:

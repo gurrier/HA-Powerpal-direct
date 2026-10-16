@@ -76,6 +76,10 @@ CLOCK_SAMPLE_MIN_SPACING_S = 45
 # The link often drops once within seconds of a new connection (seen on Windows and on
 # Home Assistant); that isn't a stall worth reporting.
 POST_CONNECT_DROP_S = 30
+# Connected, authenticated and subscribed this many times in a row without a single
+# reading: the Powerpal accepts a wrong pairing code without complaint, and silence is
+# the only symptom. Reported as a repair issue, since nothing else can tell.
+SILENT_SESSIONS_BEFORE_ISSUE = 3
 # Beyond this, averaging pulses over the gap wouldn't say anything about current power.
 MAX_POWER_INTERVAL_S = 300
 # History replies arrive at 20-70 records/s; give up on a burst that goes quiet this long.
@@ -170,6 +174,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._drop_since: float | None = None
         self._last_record_wall: float | None = None
         self._intentional_drop = False
+        self._silent_sessions = 0
         # Off releases the Powerpal (e.g. for the phone app or an ESP32 gateway) until
         # switched back on. The switch entity restores it across restarts.
         self.connection_enabled = True
@@ -397,6 +402,31 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     def _bond_issue_id(self) -> str:
         return f"bond_failed_{self.config_entry.entry_id}"
 
+    @property
+    def _silent_issue_id(self) -> str:
+        return f"no_readings_{self.config_entry.entry_id}"
+
+    @callback
+    def _note_silent_session(self) -> None:
+        self._silent_sessions += 1
+        if self._silent_sessions < SILENT_SESSIONS_BEFORE_ISSUE:
+            return
+        _LOGGER.error(
+            "%s: Connected %s times in a row without a single reading. The Powerpal accepts a wrong "
+            "pairing code without complaint, so check the code",
+            self.address,
+            self._silent_sessions,
+        )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._silent_issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="no_readings",
+            translation_placeholders={"name": self.config_entry.title, "count": str(self._silent_sessions)},
+        )
+
     @callback
     def _warn_if_passive_only(self) -> None:
         """Explain the one case where waiting won't help: nothing can connect to it."""
@@ -594,6 +624,9 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             clock_set_this_session = True
         if self.persistent:
             await client.ensure_reading_batch_size(self.batch_minutes)
+        # Readings can start the moment the subscription is in place.
+        self._clock_offsets.clear()
+        self._last_live_arrival = None
         await client.subscribe(self._on_measurement, self._on_battery)
         self.data.identity = await client.read_identity(api_key)
         self._update_device_registry(self.data.identity)
@@ -606,8 +639,6 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         connected_at = time.monotonic()
         self._connected_at = connected_at
         self._last_record_arrival = connected_at
-        self._clock_offsets.clear()
-        self._last_live_arrival = None
 
         await self._async_catch_up(client, None, history)
         self._report_recovered_stall()
@@ -627,6 +658,8 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             if self._last_record_arrival is not None and time.monotonic() - self._last_record_arrival > stale_after:
                 _LOGGER.warning("%s: No reading for over %s s; reconnecting to recover", self.address, stale_after)
                 self._drop_reason = "connected, but the Powerpal stopped sending readings"
+                if self._last_record_arrival == connected_at:
+                    self._note_silent_session()
                 return
             silent_for = time.monotonic() - self._last_record_arrival
             if (
@@ -867,6 +900,9 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         if newest is None:
             return 0
 
+        if self._silent_sessions:
+            self._silent_sessions = 0
+            ir.async_delete_issue(self.hass, DOMAIN, self._silent_issue_id)
         measurement = newest.measurement
         interval = newest.interval_s
         if interval is None or interval > MAX_POWER_INTERVAL_S:

@@ -296,8 +296,13 @@ Turn on debug logging for `custom_components.powerpal_direct` (and
 device page. Diagnostics include the last catch-up and the saved counters, with the
 pairing code and API key redacted.
 
-- **"Pairing code not accepted" / reauthentication requested**: the link is bonded but
-  the code was rejected. Check the code.
+- **"… is connected but sends no readings" Repairs issue**: the Powerpal accepts a wrong
+  pairing code without complaint and simply never sends readings, so this is how a wrong
+  code shows up. Check the 6-digit code and enter it again under Settings → Devices &
+  services → Powerpal Direct → ⋮ → **Reconfigure**. The issue clears itself once readings
+  arrive. (Setup can't verify the code for the same reason.)
+- **Reauthentication requested**: the same thing, raised when the Powerpal rejected a
+  read outright. Check the code.
 - **"Can't bond over Bluetooth" Repairs issue**: see [Bonding](#bonding). Use an ESPHome
   Bluetooth proxy, and on a local adapter remove the stale record with
   `bluetoothctl remove <address>`.

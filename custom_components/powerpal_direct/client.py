@@ -138,8 +138,8 @@ class PowerpalClient:
         """Write the pairing code, and return the API key read back afterwards.
 
         The API key reads back whether or not the code took, so it only proves the link
-        is bonded. A Powerpal that ignored the code shows it differently: protected
-        values read as zeros, and no readings arrive.
+        is bonded. A wrong code can't be told apart here: the Powerpal simply never sends
+        readings, which the coordinator reports after a few silent connections.
         """
         try:
             return await self._try_authenticate()
@@ -161,6 +161,10 @@ class PowerpalClient:
         except BleakError as err:
             if is_bond_failure(err):
                 raise PowerpalBondError(f"Still not bonded after pairing: {err}") from err
+            if not self.is_connected:
+                # The link went away mid-way: nothing to do with the code. Let the
+                # connection loop retry, rather than asking for the code again.
+                raise
             raise PowerpalAuthError(f"Pairing code not accepted: {err}") from err
 
     async def _try_authenticate(self) -> str:
