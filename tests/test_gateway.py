@@ -98,11 +98,15 @@ async def test_takes_over_entity_ids_and_carries_on(hass: HomeAssistant) -> None
     hass.config.components.add("bluetooth_adapters")
     registry = register_gateway(hass)
     # The gateway's last readings, as the recorder has them.
-    last_timestamp = dt_util.utc_from_timestamp(T0 - 300).isoformat()
-    hass.states.async_set("sensor.powerpal_gateway_powerpal_total_energy", "19.345")
-    hass.states.async_set("sensor.powerpal_gateway_powerpal_daily_energy", "4.5")
-    hass.states.async_set("sensor.bedroom_powerpal_gateway_powerpal_timestamp", last_timestamp)
-    await async_wait_recording_done(hass)
+    # Several readings in the recorder, with the one to carry on from last. Only the
+    # newest counts: an earlier version took the oldest, a week-old total in the field.
+    for total, daily, stamp in (("19.100", "4.2", T0 - 420), ("19.230", "4.35", T0 - 360), ("19.345", "4.5", T0 - 300)):
+        hass.states.async_set("sensor.powerpal_gateway_powerpal_total_energy", total)
+        hass.states.async_set("sensor.powerpal_gateway_powerpal_daily_energy", daily)
+        hass.states.async_set(
+            "sensor.bedroom_powerpal_gateway_powerpal_timestamp", dt_util.utc_from_timestamp(stamp).isoformat()
+        )
+        await async_wait_recording_done(hass)
     for entity_id in GATEWAY.values():
         hass.states.async_set(entity_id, "unavailable")
     await async_wait_recording_done(hass)

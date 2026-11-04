@@ -120,7 +120,10 @@ def _recent_states(hass: HomeAssistant, entity_id: str, limit: int):
         limit=limit,
         include_start_time_state=False,
     )
-    return found.get(entity_id, [])
+    # `descending` only decides which end of the window the limit keeps; the recorder
+    # hands the states back oldest first regardless. Sort here, so callers can rely on
+    # newest first. (Seen in the field: the carry-on took a week-old total.)
+    return sorted(found.get(entity_id, []), key=lambda state: state.last_updated, reverse=True)
 
 
 @dataclass(slots=True)
