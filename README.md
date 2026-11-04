@@ -243,6 +243,23 @@ The last reading counted is saved with the totals, and every reading carries its
 timestamp, so replaying history never counts a minute twice. Readings are booked to the day
 they were measured on, so history replayed after midnight lands in yesterday, not today.
 
+### Keeping the Powerpal's clock right
+
+The Powerpal stamps every reading from its own clock and sends nothing at all while that
+clock is unset, as it is after a reset. The integration sets it only when there's a reason:
+
+- on connecting, when the Powerpal's stored history is empty, as after a reset;
+- when a connection has been up for two and a half minutes and no reading has come;
+- when the clock has drifted more than 20 seconds from Home Assistant's, judged by when
+  live readings arrive (the Clock Offset sensor), and not more often than every 6 hours.
+
+The Powerpal's clock gains about 3 seconds a day while connected, so expect a correction
+every week or so. The limit is deliberately tight: the Powerpal re-stamps its stored
+readings by about the same offset when they're replayed, and a copy stamped half a minute
+or more after the live reading it duplicates would be counted as a new minute. A correction
+moves the last-counted mark by the same amount, so nothing is lost or double counted. The
+**Set Clock** button does the same by hand.
+
 ### Things to know
 
 - **Total Energy's own statistics put recovered energy in the hour it was recovered.**

@@ -64,8 +64,11 @@ BATTERY_REFRESH_S = 3600
 # - when a connection gets no reading this long past the reading interval;
 # - when the clock has drifted further than this from Home Assistant's, judged by when
 #   live readings arrive, but no more often than every CLOCK_MIN_INTERVAL_S.
+# The drift limit has to stay well under energy.MIN_RECORD_SPACING_S: the Powerpal re-stamps
+# its stored records by about the offset, and a copy that far past the live reading would
+# count as a new minute. The clock gains about 3 s a day, so this means a set every week or so.
 CLOCK_NO_READING_GRACE_S = 90
-CLOCK_DRIFT_LIMIT_S = 60
+CLOCK_DRIFT_LIMIT_S = 20
 CLOCK_MIN_INTERVAL_S = 6 * 3600
 CLOCK_OFFSET_SAMPLES = 10
 CLOCK_OFFSET_MIN_SAMPLES = 5
