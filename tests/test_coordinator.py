@@ -127,6 +127,21 @@ async def test_gap_on_live_connection_is_backfilled(hass: HomeAssistant, device:
     assert device.history_requests == [(T0 - 599, T0 - 1)]
     assert coordinator.energy.state.total_pulses == 9 * 5 + 6
     assert coordinator.energy.watermark == T0
+    # Nine minutes were missing, T0-540 to T0-60: the window's end just before T0 isn't one.
+    result = coordinator.data.last_catch_up
+    assert result is not None and (result.expected, result.received) == (9, 9)
+
+
+async def test_stored_copy_of_last_live_reading_is_not_caught_up(hass: HomeAssistant, device: FakePowerpal) -> None:
+    """After a drop, the Powerpal's newest stored record is usually the last minute already
+    counted live, re-stamped a few seconds later by its own clock. Nothing to fetch."""
+    coordinator = make_coordinator(hass, poll_interval=15)
+    coordinator.energy.state = EnergyState(total_pulses=1000, watermark=device.history_range.newest - 3)
+    await coordinator._async_session(BLE_DEVICE)
+
+    assert device.history_requests == []
+    assert coordinator.data.last_catch_up is None
+    assert coordinator.energy.state.total_pulses == 1000
 
 
 async def test_persistent_session_streams_until_disconnect(hass: HomeAssistant, device: FakePowerpal) -> None:

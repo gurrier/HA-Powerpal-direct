@@ -729,16 +729,24 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             return
 
         if window is None:
-            if history.newest <= watermark:
-                return
             window = (watermark + 1, history.newest)
+            last_wanted = history.newest
+        else:
+            # A window opened by a gap in the live stream ends just before the reading that
+            # showed the gap; the last record wanted is the minute before that reading.
+            last_wanted = window[1] + 1 - RECORD_INTERVAL_S
         start, end = window
-        if start > end:
+        # Records come one a minute, stamped at the Powerpal's own seconds past the minute,
+        # so count minutes from the watermark rather than the window's length. The stored
+        # copy of the watermark's own minute, re-stamped a few seconds later, isn't a new
+        # reading, and asking for it would only report "0 of 1 recovered".
+        first_wanted = max(start - 1, history.oldest - RECORD_INTERVAL_S)
+        expected = max(0, round((last_wanted - first_wanted) / RECORD_INTERVAL_S))
+        unrecoverable = max(0, round((history.oldest - (start - 1)) / RECORD_INTERVAL_S) - 1)
+        if expected == 0:
             self._history_window = None
             self._flush_pending_live()
             return
-        unrecoverable = max(0, (history.oldest - start) // RECORD_INTERVAL_S)
-        expected = max(0, (end - max(start, history.oldest)) // RECORD_INTERVAL_S + 1)
         if unrecoverable:
             _LOGGER.warning(
                 "%s: %s minutes of readings are older than anything the Powerpal still holds and are lost",
