@@ -87,10 +87,11 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=lambda c: c.data.last_record,
     ),
+    # The per-reading sensors have no state class, like the gateway's: their hourly
+    # statistics would only repeat what Total Energy's and Power's already say.
     PowerpalSensorDescription(
         key="last_pulses",
         translation_key="last_pulses",
-        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda c: c.data.last_pulses,
     ),
     PowerpalSensorDescription(
@@ -98,13 +99,11 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
         translation_key="last_watt_hours",
         # Not the energy device class: that's for totals, and this is one reading's worth.
         native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
-        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda c: c.last_watt_hours,
     ),
     PowerpalSensorDescription(
         key="last_cost",
         translation_key="last_cost",
-        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=6,
         value_fn=lambda c: c.last_cost,
     ),

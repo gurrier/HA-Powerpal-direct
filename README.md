@@ -209,7 +209,7 @@ Things to know:
   you renamed them in your YAML, rename Powerpal Direct's entities by hand instead
   (Settings → Entities → the entity → entity ID). Home Assistant then attaches the old
   history to the new entity.
-- Pulses, Watt Hours and Cost now have units, so from the switch-over on they're graphed as
+- Pulses and Watt Hours now have units, so from the switch-over on they're graphed as
   numbers. Their earlier history is kept.
 - Automations watching the gateway's Timestamp (e.g. a "readings stalled" alert) carry on
   working, since Powerpal Direct now owns that entity. Ones watching the ESP32's own
