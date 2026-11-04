@@ -199,6 +199,18 @@ Things to know:
   that time of removing the gateway.
 - Pulses, Watt Hours and Cost now have units, so from the switch-over on they're graphed as
   numbers. Their earlier history is kept.
+- **If the Energy dashboard calculates costs from Total Energy**, do one more thing after
+  the first Home Assistant restart following the switch-over. Home Assistant keys the
+  dashboard's cost sensor to the energy entity's registry record, which the takeover can't
+  carry over, so on that restart it creates a new cost sensor, `…total_energy_cost_2`,
+  starting from zero, and leaves the old one (with all the cost history) orphaned. To keep
+  the history: under Settings → Devices & services → Entities, delete the old
+  `…total_energy_cost` (shown as unavailable), then rename `…total_energy_cost_2` to that
+  ID. Expect a small error in that hour's cost, from the sensor dipping while the switch-over
+  happened.
+- Automations watching the gateway's Timestamp (e.g. a "readings stalled" alert) carry on
+  working, since Powerpal Direct now owns that entity. Ones watching the ESP32's own
+  entities, such as its reset reason, can never fire again and can be deleted.
 
 ## Energy dashboard
 
