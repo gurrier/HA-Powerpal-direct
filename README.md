@@ -293,6 +293,10 @@ python3.13 -m venv .venv
 The tests run against a simulated Powerpal (`tests/fakes.py`) that replays history the
 way the real one does, including live readings crossing a history reply.
 
+## Licence
+
+GPLv3. See [LICENSE](LICENSE). Copyright (C) 2026 Tony Mugan.
+
 ## Credits
 
 Builds on the protocol work of WeekendWarrior1 and muneeb1990, the
