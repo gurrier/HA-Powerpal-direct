@@ -160,7 +160,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._unsubs: list[CALLBACK_TYPE] = []
         self._stopping = False
         self.first_setup = False
-        self.gateway = GatewayEntities(available={}, still_present={})
+        self.gateway = GatewayEntities(available={}, adoptable={}, still_present={})
         self.cloud = CloudUploader(hass, entry.entry_id)
         self.hourly = HourlyEnergyStatistic(hass, entry.entry_id, self.address, entry.title)
         self._clock_offsets: deque[float] = deque(maxlen=CLOCK_OFFSET_SAMPLES)
@@ -334,9 +334,10 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         own history.
         """
         state = self.energy.state
-        if state.total_pulses or state.watermark is not None or not self.gateway.available:
+        carried = {**self.gateway.available, **self.gateway.adoptable}
+        if state.total_pulses or state.watermark is not None or not carried:
             return
-        readings = await async_last_gateway_readings(self.hass, self.gateway.available)
+        readings = await async_last_gateway_readings(self.hass, carried)
         if readings.total_kwh is not None:
             state.total_pulses = round(readings.total_kwh * self.pulses_per_kwh)
         if readings.daily_kwh is not None and readings.daily_date == dt_util.now().date().isoformat():

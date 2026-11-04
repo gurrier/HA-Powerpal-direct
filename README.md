@@ -162,101 +162,58 @@ twice. See [Migrating from the ESP32 gateway](#migrating-from-the-esp32-gateway)
 
 ## Migrating from the ESP32 gateway
 
-Powerpal Direct can take over the gateway's entity IDs, so history, long-term statistics,
+Powerpal Direct can take over the gateway's entities, so history, long-term statistics,
 the Energy dashboard, utility meters and automations all carry on without editing anything.
 
 1. **Turn off any automation that uploads readings to Powerpal's cloud** with a
    `rest_command` (Settings → Automations & scenes → the automation → ⋮ → **Disable**).
-   Do this first. Powerpal Direct takes over the gateway's Pulses, Watt Hours and Cost
-   entity IDs, so such an automation would carry on firing on the new sensors and send
-   every reading twice: once from it, and once from **Cloud Upload** if you turn that on.
-   Once Cloud Upload is working, the automation, its `rest_command` and any API key kept in
-   `secrets.yaml` for it can be deleted. Powerpal Direct reads the key from the Powerpal.
-2. **Remove the gateway's device** from Home Assistant: Settings → Devices & services →
-   ESPHome → the gateway → ⋮ → **Delete**, and power the ESP32 off (or reflash it as a
-   Bluetooth proxy). Removing it frees its entity IDs.
-3. **Add Powerpal Direct.** Each entity that has a gateway counterpart is created under the
-   gateway's old entity ID, found by name (`Powerpal Total Energy` and so on), whatever its
-   device or area prefix was. Setup also works out the gateway's pulses per kWh from its
-   recorded Pulses and Watt Hours, and fills it in for you to confirm. It must match the
-   gateway's, or the total carried over is rescaled. Cost per kWh is carried over the same
-   way.
-4. **It carries on from the gateway's last readings.** Total Energy starts from the
-   gateway's last Total Energy, rather than zero. Today's Daily Energy carries on too. The
-   gateway's last Timestamp becomes the starting point, so the first catch-up fetches the
-   minutes since the gateway stopped from the Powerpal's own history.
+   Powerpal Direct takes over the gateway's Pulses, Watt Hours and Cost entities, so such an
+   automation would carry on firing on the new sensors and send every reading twice if you
+   turn on **Cloud Upload**. Once Cloud Upload is working, the automation, its
+   `rest_command` and any API key kept in `secrets.yaml` for it can be deleted. Powerpal
+   Direct reads the key from the Powerpal.
+2. **Add Powerpal Direct** (Settings → Devices & services → Add integration). While the
+   gateway is running, the Powerpal can't be discovered, because the gateway holds its only
+   connection; setup notices the gateway and offers to **take over**. Say yes and it does
+   the rest: it switches the gateway's own BLE connection off so the Powerpal is free, waits
+   for it, pairs with it, and disables the gateway's ESPHome entry so its entity records can
+   be adopted. Setup also works out the gateway's pulses per kWh from its recorded Pulses
+   and Watt Hours and fills it in for you to confirm. It must match the gateway's, or the
+   total carried over is rescaled. Cost per kWh is carried over the same way.
+3. **Power the ESP32 off** (or reflash it as a Bluetooth proxy). Its connection switch comes
+   back on if it restarts, and it would then take the Powerpal back.
+4. **Everything carries on.** Powerpal Direct adopts the gateway's entity records whole:
+   the same entity IDs, names, areas, customisations and registry records, so history, the
+   Energy dashboard (cost sensor included), utility meters and automations need no changes.
+   Total Energy starts from the gateway's last Total Energy rather than zero, today's Daily
+   Energy carries on, and the gateway's last Timestamp becomes the starting point, so the
+   first catch-up fetches the minutes since the gateway stopped from the Powerpal's own
+   history.
+5. **Delete the gateway's ESPHome entry** whenever you like. Its remaining entities (the
+   ESP32's own: WiFi signal, heap, reset reason, watchdog) go with it; the adopted ones stay.
 
 Things to know:
 
-- Only entities that don't exist yet are created this way. If Powerpal Direct was already
+- **If you deleted the gateway's entry instead of disabling it**, Powerpal Direct still
+  takes over its entity IDs (Home Assistant remembers removed entities for 30 days), but
+  under new registry records. History carries on, with one catch: Home Assistant keys the
+  Energy dashboard's cost sensor to the registry record, so the first restart afterwards
+  creates a new cost sensor, `…total_energy_cost_2`, starting from zero, and leaves the old
+  one (with all the cost history) orphaned. To keep the history: under Settings → Devices &
+  services → Entities, delete the old `…total_energy_cost` (shown as unavailable), then
+  rename `…total_energy_cost_2` to that ID.
+- Only entities that don't exist yet are taken over this way. If Powerpal Direct was already
   set up alongside the gateway, delete Powerpal Direct as well, then add it again after
   step 2. The Bluetooth bond is kept, so it only needs the pairing code again.
 - The gateway's entities are recognised by the names the ESPHome component documents. If
   you renamed them in your YAML, rename Powerpal Direct's entities by hand instead
   (Settings → Entities → the entity → entity ID). Home Assistant then attaches the old
   history to the new entity.
-- Home Assistant remembers removed entities for 30 days, so add Powerpal Direct within
-  that time of removing the gateway.
 - Pulses, Watt Hours and Cost now have units, so from the switch-over on they're graphed as
   numbers. Their earlier history is kept.
-- **If the Energy dashboard calculates costs from Total Energy**, do one more thing after
-  the first Home Assistant restart following the switch-over. Home Assistant keys the
-  dashboard's cost sensor to the energy entity's registry record, which the takeover can't
-  carry over, so on that restart it creates a new cost sensor, `…total_energy_cost_2`,
-  starting from zero, and leaves the old one (with all the cost history) orphaned. To keep
-  the history: under Settings → Devices & services → Entities, delete the old
-  `…total_energy_cost` (shown as unavailable), then rename `…total_energy_cost_2` to that
-  ID. Expect a small error in that hour's cost, from the sensor dipping while the switch-over
-  happened.
 - Automations watching the gateway's Timestamp (e.g. a "readings stalled" alert) carry on
   working, since Powerpal Direct now owns that entity. Ones watching the ESP32's own
   entities, such as its reset reason, can never fire again and can be deleted.
-
-## Energy dashboard
-
-Powerpal Direct also writes a long-term statistic, **Powerpal … Energy (hourly)**, that
-books every reading to the hour it was measured in. Readings recovered after an outage go
-back into the hours they belong to, rather than the hour they arrived.
-
-Which to use as the grid consumption source in Settings → Dashboards → Energy:
-
-- **Total Energy (the sensor)**, if the Energy dashboard calculates your costs from a price
-  entity or a fixed price. Home Assistant only works out costs that way for an entity, and
-  the hourly statistic isn't one: with it, costs would silently stop. In normal running,
-  readings arrive within a minute or so of being measured, so the sensor's hours are only
-  off around an outage.
-- **The hourly statistic**, if you don't track costs in the Energy dashboard, or want the
-  hours exact after outages above all else. It also appears in statistics graph cards,
-  whichever you choose.
-
-- When it's first created, it copies the hourly history the Total Energy sensor already
-  has, so switching the Energy dashboard over leaves no gap. After taking over from an
-  ESP32 gateway, that's the gateway's history.
-- On a brand-new install, it also imports whatever history the Powerpal holds, so the
-  Energy dashboard starts with that. Total Energy itself still starts from zero.
-- It's separate from Total Energy's own statistics, which are untouched, along with
-  anything built on them, such as utility meters.
-
-## Keeping the Powerpal's clock right
-
-Every reading is stamped by the Powerpal's own clock, and the Powerpal sends nothing at all
-until its clock has been set. Rather than set it on a timer (the ESP32 gateway did every 6
-hours), Powerpal Direct sets it only when needed:
-
-- on connecting, when the Powerpal's history is empty, which is what it looks like after a
-  reset or a new bond;
-- when a connection gets no reading at all shortly after connecting;
-- when the clock has drifted more than a minute from Home Assistant's, judged from when
-  live readings arrive (shown as **Clock Offset**), at most every 6 hours.
-
-Other things can set the Powerpal's clock too, notably the Powerpal phone app, which syncs
-in the background whenever it can reach the Powerpal (for instance while **BLE Connection**
-is off). Setting the clock re-stamps the Powerpal's stored readings a few seconds later, so
-the same minute can come back with a new timestamp. Powerpal Direct recognises those (real
-readings are a minute apart) and doesn't count them twice.
-
-**Set Clock** (off by default) sets it on demand. Reading `59DA0004` back doesn't tell you
-the time: it returns the last value written.
 
 ## Options
 

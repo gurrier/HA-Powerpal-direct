@@ -1,13 +1,20 @@
-"""Taking over from an esphome-powerpal_ble gateway: its entity IDs and its last readings.
+"""Taking over from an esphome-powerpal_ble gateway: its entities and its last readings.
 
-Home Assistant keeps state history and long-term statistics against entity IDs. Once the
-gateway's ESPHome device has been removed, its entity IDs are free, and Powerpal Direct
-can register its own entities under them, so graphs, statistics, the Energy dashboard,
-utility meters and automations carry on as if nothing changed.
+Home Assistant keeps state history and long-term statistics against entity IDs, and keys
+some things (notably the Energy dashboard's cost sensor) to the entity's registry record.
+Two ways to carry on from the gateway, in order of preference:
+
+- Adopt: while the gateway's ESPHome entry is disabled, its entities are registered but
+  not loaded, and Home Assistant lets them be moved to another integration. Powerpal
+  Direct takes the records over whole, so the IDs, names, areas, customisations and the
+  cost sensor all survive. Nothing to fix afterwards.
+- Rename: once the gateway's entry has been deleted, only its entity IDs remain, in Home
+  Assistant's record of removed entities. Powerpal Direct registers its own entities under
+  them. History carries on, but the records are new, so the Energy dashboard's cost sensor
+  gets recreated at the next restart (the README says how to repair that).
 
 The gateway's entities are recognised by the names the ESPHome component documents
-("Powerpal Total Energy" and so on), which ESPHome puts in each entity's unique ID. Home
-Assistant remembers removed entities, so they're still found after the device is gone.
+("Powerpal Total Energy" and so on), which ESPHome puts in each entity's unique ID.
 """
 
 from __future__ import annotations
@@ -16,9 +23,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util, slugify
+
+from .const import DOMAIN, MANUFACTURER
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,8 +63,15 @@ class GatewayEntities:
 
     # Powerpal Direct entity key -> a removed gateway entity's ID, free to take over.
     available: dict[str, str]
-    # Gateway entities still registered, whose IDs can't be taken until they're removed.
+    # Registered to a disabled ESPHome entry, so the records themselves can be adopted.
+    adoptable: dict[str, str]
+    # Gateway entities still live, which can't be touched until their entry is disabled.
     still_present: dict[str, str]
+
+    @property
+    def readable(self) -> dict[str, str]:
+        """Every gateway entity with history worth reading, whichever way it's taken over."""
+        return {**self.still_present, **self.available, **self.adoptable}
 
 
 def _gateway_key(unique_id: str) -> str | None:
@@ -70,8 +87,20 @@ def _gateway_key(unique_id: str) -> str | None:
 def find_gateway_entities(hass: HomeAssistant) -> GatewayEntities:
     registry = er.async_get(hass)
     still_present: dict[str, str] = {}
+    adoptable: dict[str, str] = {}
     for entry in registry.entities.values():
-        if entry.platform == ESPHOME and (key := _gateway_key(entry.unique_id)):
+        if entry.platform != ESPHOME or (key := _gateway_key(entry.unique_id)) is None:
+            continue
+        config_entry = hass.config_entries.async_get_entry(entry.config_entry_id) if entry.config_entry_id else None
+        # Home Assistant only lets an entity move integration while it isn't loaded, which
+        # a disabled entry guarantees.
+        if (
+            config_entry is not None
+            and config_entry.disabled_by is not None
+            and hass.states.get(entry.entity_id) is None
+        ):
+            adoptable[key] = entry.entity_id
+        else:
             still_present[key] = entry.entity_id
 
     available: dict[str, str] = {}
@@ -79,12 +108,47 @@ def find_gateway_entities(hass: HomeAssistant) -> GatewayEntities:
     for deleted in sorted(registry.deleted_entities.values(), key=lambda d: d.modified_at):
         if deleted.platform != ESPHOME or (key := _gateway_key(deleted.unique_id)) is None:
             continue
-        if key in still_present:
+        if key in still_present or key in adoptable:
             continue
         if registry.async_get(deleted.entity_id) is not None or hass.states.get(deleted.entity_id) is not None:
             continue
         available[key] = deleted.entity_id
-    return GatewayEntities(available=available, still_present=still_present)
+    return GatewayEntities(available=available, adoptable=adoptable, still_present=still_present)
+
+
+def async_adopt_gateway_entities(
+    hass: HomeAssistant, entry: ConfigEntry, address: str, gateway: GatewayEntities
+) -> None:
+    """Move a disabled gateway's entity records to Powerpal Direct, before its entities exist.
+
+    Each record keeps its ID, name, area, options and (what matters most) its registry ID,
+    so when Powerpal Direct's entity with the same unique ID is added it simply picks the
+    record up. The device is created first so the records can point at it.
+    """
+    registry = er.async_get(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(dr.CONNECTION_BLUETOOTH, address)},
+        manufacturer=MANUFACTURER,
+        name=entry.title,
+    )
+    for key, entity_id in gateway.adoptable.items():
+        try:
+            registry.async_update_entity_platform(
+                entity_id,
+                DOMAIN,
+                new_config_entry_id=entry.entry_id,
+                new_unique_id=f"{address}_{key}",
+                new_device_id=device.id,
+            )
+        except ValueError as err:
+            _LOGGER.warning("Couldn't adopt %s from the ESP32 gateway: %s", entity_id, err)
+            continue
+        adopted = registry.async_get(entity_id)
+        # Disabled only because its old entry was: enable it under ours.
+        if adopted is not None and adopted.disabled_by == er.RegistryEntryDisabler.CONFIG_ENTRY:
+            registry.async_update_entity(entity_id, disabled_by=None)
+        _LOGGER.info("Adopted %s from the ESP32 gateway", entity_id)
 
 
 def async_take_over_entity_ids(hass: HomeAssistant, address: str, domain: str, gateway: GatewayEntities) -> None:
@@ -212,11 +276,6 @@ class GatewayRates:
     cost_per_kwh: float | None = None
 
 
-def all_gateway_entity_ids(gateway: GatewayEntities) -> dict[str, str]:
-    """Removed and still-present gateway entities alike: both have history to read."""
-    return {**gateway.available, **gateway.still_present}
-
-
 def rates_from_readings(readings: list[tuple[int, int, float | None]]) -> GatewayRates:
     """Work out pulses per kWh and cost per kWh from (pulses, watt hours, cost) readings.
 
@@ -248,7 +307,7 @@ def rates_from_readings(readings: list[tuple[int, int, float | None]]) -> Gatewa
 
 async def async_detect_gateway_rates(hass: HomeAssistant, gateway: GatewayEntities) -> GatewayRates:
     """The gateway's pulses per kWh and cost per kWh, from its recorded Pulses, Watt Hours and Cost."""
-    entity_ids = all_gateway_entity_ids(gateway)
+    entity_ids = gateway.readable
     if "last_pulses" not in entity_ids or "last_watt_hours" not in entity_ids:
         return GatewayRates()
     if "recorder" not in hass.config.components:

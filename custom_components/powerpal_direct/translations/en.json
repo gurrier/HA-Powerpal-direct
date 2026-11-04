@@ -33,6 +33,16 @@
         "data": {
           "pairing_code": "Pairing code"
         }
+      },
+      "gateway": {
+        "title": "Take over from the ESP32 gateway",
+        "description": "Your Powerpal is currently connected to the ESP32 gateway ({gateway}), so Home Assistant can't reach it. Take over now: the gateway's BLE connection is switched off so the Powerpal is free, Home Assistant pairs with it, and the gateway's entry is disabled so its entities, history and Energy dashboard carry on under Powerpal Direct. Afterwards, power the ESP32 off.",
+        "data": {
+          "take_over": "Take over from the gateway"
+        },
+        "data_description": {
+          "take_over": "Untick to set up Powerpal Direct alongside the gateway instead, with its own entities."
+        }
       }
     },
     "error": {
@@ -40,7 +50,8 @@
       "invalid_auth": "The Powerpal didn't accept the pairing code.",
       "invalid_pairing_code": "The pairing code is 6 digits.",
       "not_advertising": "The Powerpal isn't advertising, so something else is probably connected to it.",
-      "cannot_bond": "Couldn't bond with the Powerpal over Bluetooth. Bonding is most reliable through an ESPHome Bluetooth proxy (the same pairing an ESP32 gateway did). On a local adapter, a failed attempt can leave a stale record behind: remove the Powerpal from the host's Bluetooth before retrying."
+      "cannot_bond": "Couldn't bond with the Powerpal over Bluetooth. Bonding is most reliable through an ESPHome Bluetooth proxy (the same pairing an ESP32 gateway did). On a local adapter, a failed attempt can leave a stale record behind: remove the Powerpal from the host's Bluetooth before retrying.",
+      "gateway_still_connected": "The Powerpal hasn't started advertising, so something still holds its connection. Power the ESP32 off, wait half a minute, and try again."
     },
     "abort": {
       "already_configured": "This Powerpal is already set up.",

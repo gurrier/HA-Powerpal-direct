@@ -8,7 +8,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, STORAGE_VERSION
 from .coordinator import PowerpalConfigEntry, PowerpalCoordinator
-from .gateway import async_take_over_entity_ids, find_gateway_entities
+from .gateway import async_adopt_gateway_entities, async_take_over_entity_ids, find_gateway_entities
 from .hourly import async_clear_hourly_statistic
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR, Platform.SWITCH]
@@ -20,6 +20,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: PowerpalConfigEntry) -> 
     coordinator.gateway = find_gateway_entities(hass)
     entry.runtime_data = coordinator
     await coordinator.async_load()
+    if coordinator.first_setup and coordinator.gateway.adoptable:
+        # The gateway's ESPHome entry is disabled: take its entity records over whole.
+        async_adopt_gateway_entities(hass, entry, coordinator.address, coordinator.gateway)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     if coordinator.first_setup:
         # Only on first setup, so an existing install's entity IDs never change under it.

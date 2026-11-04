@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 import logging
 from typing import Any
@@ -11,10 +12,10 @@ import voluptuous as vol
 
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import ConfigEntry, ConfigEntryDisabler, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
-from homeassistant.helpers import selector
+from homeassistant.helpers import entity_registry as er, selector
 
 from . import protocol
 from .client import DeviceIdentity, PowerpalAuthError, PowerpalBondError, PowerpalClient
@@ -32,9 +33,15 @@ from .const import (
     POLL_INTERVAL_MAX,
 )
 from .coordinator import PowerpalConfigEntry
-from .gateway import GatewayRates, async_detect_gateway_rates, find_gateway_entities
+from .gateway import GatewayEntities, GatewayRates, async_detect_gateway_rates, find_gateway_entities
 
 _LOGGER = logging.getLogger(__name__)
+
+# After the gateway's BLE connection is switched off, the Powerpal notices within seconds
+# and starts advertising; give the scanners a while to hear it.
+GATEWAY_RELEASE_TIMEOUT_S = 45
+GATEWAY_RELEASE_POLL_S = 2
+CONF_TAKE_OVER = "take_over"
 
 PAIRING_CODE_SELECTOR = selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD))
 PULSES_SELECTOR = selector.NumberSelector(
@@ -75,6 +82,23 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovery: BluetoothServiceInfoBleak | None = None
         self._discovered: dict[str, BluetoothServiceInfoBleak] = {}
         self._gateway_rates: GatewayRates | None = None
+        # A running ESP32 gateway's ESPHome entry, to disable once pairing succeeds so its
+        # entity records can be adopted.
+        self._gateway_entry: ConfigEntry | None = None
+        self._gateway_declined = False
+
+    def _async_find_live_gateway(self) -> tuple[ConfigEntry, GatewayEntities] | None:
+        """The ESP32 gateway's ESPHome entry, if it's enabled and its entities are registered."""
+        gateway = find_gateway_entities(self.hass)
+        registry = er.async_get(self.hass)
+        for entity_id in gateway.still_present.values():
+            entry = registry.async_get(entity_id)
+            if entry is None or entry.config_entry_id is None:
+                continue
+            config_entry = self.hass.config_entries.async_get_entry(entry.config_entry_id)
+            if config_entry is not None and config_entry.disabled_by is None:
+                return config_entry, gateway
+        return None
 
     @staticmethod
     @callback
@@ -96,10 +120,12 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
             self._discovery = self._discovered[address]
             return await self.async_step_pair()
 
-        configured = self._async_current_ids(include_ignore=False)
-        for info in bluetooth.async_discovered_service_info(self.hass, connectable=True):
-            if info.address not in configured and is_powerpal(info):
-                self._discovered[info.address] = info
+        # A running gateway holds the Powerpal's only connection, so it can't even be
+        # discovered until the gateway lets go. Offer to do that here.
+        if not self._gateway_declined and self._async_find_live_gateway() is not None:
+            return await self.async_step_gateway()
+
+        self._async_collect_discovered()
         if not self._discovered:
             return self.async_abort(reason="no_devices_found")
 
@@ -117,10 +143,82 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
         )
 
+    @callback
+    def _async_collect_discovered(self) -> None:
+        configured = self._async_current_ids(include_ignore=False)
+        for info in bluetooth.async_discovered_service_info(self.hass, connectable=True):
+            if info.address not in configured and is_powerpal(info):
+                self._discovered[info.address] = info
+
+    async def async_step_gateway(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Take over from a running ESP32 gateway: release the Powerpal, then pair."""
+        found = self._async_find_live_gateway()
+        if found is None:
+            return await self.async_step_user()
+        gateway_entry, gateway = found
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input.get(CONF_TAKE_OVER, True):
+                self._gateway_declined = True
+                return await self.async_step_user()
+            self._gateway_entry = gateway_entry
+            await self._async_release_gateway(gateway)
+            if await self._async_wait_for_powerpal():
+                address = next(iter(self._discovered))
+                await self.async_set_unique_id(address, raise_on_progress=False)
+                self._abort_if_unique_id_configured()
+                self._discovery = self._discovered[address]
+                return await self.async_step_pair()
+            errors["base"] = "gateway_still_connected"
+
+        return self.async_show_form(
+            step_id="gateway",
+            data_schema=vol.Schema({vol.Required(CONF_TAKE_OVER, default=True): bool}),
+            errors=errors,
+            description_placeholders={"gateway": gateway_entry.title},
+        )
+
+    async def _async_release_gateway(self, gateway: GatewayEntities) -> None:
+        """Switch the gateway's own BLE connection off, so the Powerpal is free to pair."""
+        switch = gateway.still_present.get("connection")
+        state = self.hass.states.get(switch) if switch else None
+        if switch is None or state is None or state.state != "on":
+            return
+        _LOGGER.info("Switching off the ESP32 gateway's connection (%s) to release the Powerpal", switch)
+        await self.hass.services.async_call("switch", "turn_off", {"entity_id": switch}, blocking=True)
+
+    async def _async_wait_for_powerpal(self) -> bool:
+        for _ in range(int(GATEWAY_RELEASE_TIMEOUT_S / GATEWAY_RELEASE_POLL_S)):
+            self._async_collect_discovered()
+            if self._discovered:
+                return True
+            await asyncio.sleep(GATEWAY_RELEASE_POLL_S)
+        return False
+
+    async def _async_disable_gateway_entry(self) -> None:
+        """Disable the gateway's ESPHome entry, so its entity records can be adopted at setup.
+
+        Only once pairing has succeeded: until then the gateway is still the working setup.
+        """
+        if self._gateway_entry is None:
+            return
+        entry = self.hass.config_entries.async_get_entry(self._gateway_entry.entry_id)
+        if entry is None or entry.disabled_by is not None:
+            return
+        _LOGGER.info("Disabling the ESP32 gateway's entry %s; Powerpal Direct takes over its entities", entry.title)
+        await self.hass.config_entries.async_set_disabled_by(entry.entry_id, ConfigEntryDisabler.USER)
+
     async def async_step_pair(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Ask for the pairing code and the meter's pulse rate, and check the code works."""
         assert self._discovery is not None
         errors: dict[str, str] = {}
+        if (
+            not self._gateway_declined
+            and self._gateway_entry is None
+            and (found := self._async_find_live_gateway()) is not None
+        ):
+            # Discovered while the gateway's entry is still enabled (the ESP32 is off).
+            self._gateway_entry = found[0]
         if self._gateway_rates is None:
             # An ESP32 gateway's recorded readings say what its pulses per kWh and cost per
             # kWh were. Pulses per kWh has to match, or the total it carries on from is
@@ -132,6 +230,7 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
             if code is None:
                 errors[CONF_PAIRING_CODE] = "invalid_pairing_code"
             elif (identity := await self._async_try(code, errors)) is not None:
+                await self._async_disable_gateway_entry()
                 return self.async_create_entry(
                     title=f"Powerpal {identity.device_id}",
                     data={CONF_PAIRING_CODE: code},
@@ -163,6 +262,12 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
                 "gateway_note": (
                     f"\n\nPulses per kWh is set to {pulses_default:g}, found from your ESP32 gateway's readings."
                     if rates.pulses_per_kwh
+                    else ""
+                )
+                + (
+                    f"\n\nThe gateway's entry ({self._gateway_entry.title}) will be disabled once pairing "
+                    "succeeds, so its entities carry on under Powerpal Direct."
+                    if self._gateway_entry is not None
                     else ""
                 ),
             },

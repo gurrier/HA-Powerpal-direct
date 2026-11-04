@@ -215,3 +215,107 @@ def test_a_short_history_that_fits_several_rates_takes_the_nearest() -> None:
     # 100 pulses at 1000/kWh is 100 Wh, which no other standard rate reproduces; with
     # only tiny readings both 1000 and 1200 could fit, and the ratio decides.
     assert rates_from_readings([(60, 60, None)]).pulses_per_kwh == 1000
+
+
+def register_gateway_under(hass: HomeAssistant, esphome_entry: MockConfigEntry, disabled: bool) -> dict[str, str]:
+    """Register the gateway's entities to an ESPHome entry. Returns entity ID -> registry ID."""
+    registry = er.async_get(hass)
+    ids = {}
+    for (kind, name), entity_id in GATEWAY.items():
+        domain, object_id = entity_id.split(".")
+        entry = registry.async_get_or_create(
+            domain,
+            "esphome",
+            f"{GATEWAY_MAC}/0/{kind}/{name}",
+            suggested_object_id=object_id,
+            config_entry=esphome_entry,
+            disabled_by=er.RegistryEntryDisabler.CONFIG_ENTRY if disabled else None,
+        )
+        ids[entity_id] = entry.id
+    return ids
+
+
+async def test_a_live_gateway_is_still_present_and_a_disabled_one_adoptable(hass: HomeAssistant) -> None:
+    from homeassistant.config_entries import ConfigEntryDisabler
+
+    live = MockConfigEntry(domain="esphome", unique_id="live")
+    live.add_to_hass(hass)
+    register_gateway_under(hass, live, disabled=False)
+    found = find_gateway_entities(hass)
+    assert found.adoptable == {} and found.available == {}
+    assert found.still_present["energy"] == "sensor.powerpal_gateway_powerpal_total_energy"
+
+    await hass.config_entries.async_set_disabled_by(live.entry_id, ConfigEntryDisabler.USER)
+    found = find_gateway_entities(hass)
+    assert found.still_present == {}
+    assert found.adoptable["energy"] == "sensor.powerpal_gateway_powerpal_total_energy"
+    assert "sensor.bedroom_powerpal_gateway_heap_free" not in found.adoptable.values()
+
+
+async def test_adopts_a_disabled_gateways_entity_records(hass: HomeAssistant) -> None:
+    from homeassistant.config_entries import ConfigEntryDisabler
+
+    hass.config.components.add("bluetooth_adapters")
+    esphome_entry = MockConfigEntry(domain="esphome", unique_id="84:cc:a8:52:12:7c", title="BLEProxy 52127c")
+    esphome_entry.add_to_hass(hass)
+    registry_ids = register_gateway_under(hass, esphome_entry, disabled=False)
+    # The gateway's last readings, as the recorder has them, then the entry is disabled:
+    # the entities are unloaded, but their records stay.
+    hass.states.async_set("sensor.powerpal_gateway_powerpal_total_energy", "1821.918")
+    hass.states.async_set("sensor.powerpal_gateway_powerpal_daily_energy", "9.437")
+    hass.states.async_set(
+        "sensor.bedroom_powerpal_gateway_powerpal_timestamp", dt_util.utc_from_timestamp(T0 - 300).isoformat()
+    )
+    await async_wait_recording_done(hass)
+    await hass.config_entries.async_set_disabled_by(esphome_entry.entry_id, ConfigEntryDisabler.USER)
+    for entity_id in GATEWAY.values():
+        hass.states.async_remove(entity_id)
+    registry = er.async_get(hass)
+    assert registry.async_get("sensor.powerpal_gateway_powerpal_total_energy").disabled_by is not None
+
+    device = FakePowerpal()
+    device.add_minutes(T0 - 600, 10)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        title="Powerpal 00002ba7",
+        data={CONF_PAIRING_CODE: 123123},
+        options={
+            CONF_PULSES_PER_KWH: 1000.0,
+            CONF_NOTIFICATION_INTERVAL: 1,
+            CONF_POLL_INTERVAL: 0,
+            CONF_COST_PER_KWH: 0.0,
+        },
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch.object(FakeClient, "device", device, create=True),
+        patch("custom_components.powerpal_direct.coordinator.PowerpalClient", FakeClient),
+        patch("custom_components.powerpal_direct.coordinator.bluetooth") as bluetooth,
+    ):
+        bluetooth.async_ble_device_from_address.return_value = BLE_DEVICE
+        bluetooth.async_register_callback.return_value = MagicMock()
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        await until(lambda: hass.states.get("sensor.powerpal_gateway_powerpal_total_energy").state == "1821.938")
+
+        for entity_id, old_id in registry_ids.items():
+            if entity_id in (
+                "sensor.bedroom_powerpal_gateway_heap_free",
+                "button.bedroom_powerpal_gateway_retrieve_powerpal_api_key_and_device_id",
+            ):
+                continue  # no counterpart here: stays with ESPHome
+            adopted = registry.async_get(entity_id)
+            assert adopted is not None, entity_id
+            # The same record: that's what keeps the Energy dashboard's cost sensor.
+            assert adopted.id == old_id, entity_id
+            assert adopted.platform == DOMAIN
+            assert adopted.config_entry_id == entry.entry_id
+            assert adopted.disabled_by is None
+            assert hass.states.get(entity_id) is not None, entity_id
+        assert registry.async_get("sensor.bedroom_powerpal_gateway_heap_free").platform == "esphome"
+        # Carried on from the gateway: its total plus the two minutes catch-up recovered.
+        assert device.history_requests == [(T0 - 299, T0 - 60)]
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
