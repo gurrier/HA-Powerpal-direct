@@ -67,6 +67,9 @@ SENSORS: tuple[PowerpalSensorDescription, ...] = (
     PowerpalSensorDescription(
         key="battery",
         device_class=SensorDeviceClass.BATTERY,
+        # The gateway's battery had long-term statistics (mean/min/max), so a state class
+        # is needed for them to carry on; without one Home Assistant raises a repair issue.
+        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda c: c.data.battery,
