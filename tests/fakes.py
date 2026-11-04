@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import time
 
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
@@ -17,8 +18,9 @@ ADDRESS = "DF:5C:55:00:00:01"
 PAIRING_CODE = 123123
 DEVICE_ID = "00002ba7"
 API_KEY = "95210d4e-894f-42b7-b882-4b94df7daa34"
-# A minute boundary.
-T0 = 1_791_000_000 - 1_791_000_000 % 60
+# A minute boundary two hours ago. Relative to now, because the hourly statistic keeps
+# only the last 31 days by the hour; a fixed date would age out of that window.
+T0 = (int(time.time()) // 60) * 60 - 2 * 3600
 
 BLE_DEVICE = BLEDevice(ADDRESS, "Powerpal 00002ba7", None)
 

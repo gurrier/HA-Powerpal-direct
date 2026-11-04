@@ -12,7 +12,9 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.powerpal_direct.hourly import HOUR_S, KEEP_HOURS, HourlyEnergyStatistic, HourlyLedger
 
-H0 = 1_791_000_000 - 1_791_000_000 % HOUR_S
+from .fakes import T0
+
+H0 = T0 - T0 % HOUR_S
 
 
 @pytest.fixture(autouse=True)
