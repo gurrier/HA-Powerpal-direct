@@ -23,5 +23,5 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # No logo in home-assistant/brands yet.
-          ignore: brands
+          # No logo in home-assistant/brands yet, and no topics until the repo is announced.
+          ignore: brands topics
