@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Turning Powerpal records into energy totals, without counting any minute twice.
 
 Pure Python, no Home Assistant, so it can be tested on its own.

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """An hourly energy statistic that books every reading to the hour it was measured in.
 
 Home Assistant compiles a sensor's statistics from the moments its state changes, so

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Config flow: discovery, pairing code check, reauth and options."""
 
 from __future__ import annotations

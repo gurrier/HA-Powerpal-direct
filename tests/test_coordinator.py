@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Catching up from the Powerpal's stored history without double counting."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Setting up the entry end to end, against a fake Powerpal."""
 
 from __future__ import annotations

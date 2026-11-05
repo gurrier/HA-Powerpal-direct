@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """A stand-in Powerpal that behaves like the real one over BLE, minus the radio."""
 
 from __future__ import annotations

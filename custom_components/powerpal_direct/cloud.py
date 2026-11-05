@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Optional upload of readings to Powerpal's cloud, for when Home Assistant replaces the phone.
 
 While Home Assistant holds the Powerpal's connection, the Powerpal app can't connect, so

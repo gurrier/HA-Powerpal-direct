@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Wire format, checked against the examples in the protocol write-ups."""
 
 from __future__ import annotations

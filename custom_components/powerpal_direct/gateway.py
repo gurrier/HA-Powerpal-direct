@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Taking over from an esphome-powerpal_ble gateway: its entities and its last readings.
 
 Home Assistant keeps state history and long-term statistics against entity IDs, and keys

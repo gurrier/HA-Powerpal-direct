@@ -310,12 +310,13 @@ python3.13 -m venv .venv
 The tests run against a simulated Powerpal (`tests/fakes.py`) that replays history the
 way the real one does, including live readings crossing a history reply.
 
-## Licence
-
-GPLv3. See [LICENSE](LICENSE). Copyright (C) 2026 Tony Mugan.
-
 ## Credits
 
 Builds on the protocol work of WeekendWarrior1 and muneeb1990, the
 [esphome-powerpal_ble](https://github.com/gurrier/esphome-powerpal_ble) component, and the
 history protocol documented in [Powerpal-protocol](https://github.com/gurrier/Powerpal-protocol).
+
+## Licence
+
+GPL-3.0-only. Copyright 2026 [gurrier](https://github.com/gurrier). The full text is in
+[LICENSE](LICENSE).

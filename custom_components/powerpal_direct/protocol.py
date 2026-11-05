@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Powerpal Direct wire format.
 
 Everything here is pure: no Home Assistant and no bleak, so it can be tested on its own.

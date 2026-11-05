@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """Taking over from a removed esphome-powerpal_ble gateway."""
 
 from __future__ import annotations

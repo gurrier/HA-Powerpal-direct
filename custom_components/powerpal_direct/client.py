@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """One BLE connection to a Powerpal: bond, authenticate, read and subscribe."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 gurrier <https://github.com/gurrier>
+# SPDX-License-Identifier: GPL-3.0-only
 """A BlueZ pairing agent, registered only while connecting to a Powerpal.
 
 The Powerpal only accepts a bond requested with MITM protection, even though the
