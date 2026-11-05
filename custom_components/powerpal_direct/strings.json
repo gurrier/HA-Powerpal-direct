@@ -146,7 +146,7 @@
   "issues": {
     "bond_failed": {
       "title": "{name} can't bond over Bluetooth",
-      "description": "Home Assistant couldn't bond with {name}, and the Powerpal answers nothing until it's bonded. Error: {error}\n\nThe most reliable fix is to connect through an ESPHome Bluetooth proxy (`bluetooth_proxy: active: true`), which bonds the same way an ESP32 gateway did. If you're using a local adapter, also remove the Powerpal from the host's Bluetooth (`bluetoothctl remove <address>`), since a failed attempt can leave a stale record that blocks later connections. Retries happen every 30 minutes, or press Reconnect."
+      "description": "Home Assistant couldn't bond with {name}, and the Powerpal answers nothing until it's bonded. Error: {error}\n\nThe most reliable fix is to connect through an ESPHome Bluetooth proxy (`bluetooth_proxy: active: true`), which bonds the same way an ESP32 gateway did. If you're using a local adapter, also remove the Powerpal from the host's Bluetooth (`bluetoothctl remove` followed by its address), since a failed attempt can leave a stale record that blocks later connections. Retries happen every 30 minutes, or press Reconnect."
     },
     "no_readings": {
       "title": "{name} is connected but sends no readings",
