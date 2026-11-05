@@ -12,6 +12,8 @@ CONF_PULSES_PER_KWH = "pulses_per_kwh"
 CONF_NOTIFICATION_INTERVAL = "notification_interval"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_COST_PER_KWH = "cost_per_kwh"
+# Whether the user chose, at setup, to take over an ESP32 gateway's entities.
+CONF_TAKE_OVER = "take_over"
 
 DEFAULT_PULSES_PER_KWH = 1000.0
 DEFAULT_NOTIFICATION_INTERVAL = 1

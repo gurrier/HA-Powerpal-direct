@@ -35,13 +35,13 @@
         }
       },
       "gateway": {
-        "title": "Take over from the ESP32 gateway",
-        "description": "Your Powerpal is currently connected to the ESP32 gateway ({gateway}), so Home Assistant can't reach it. Take over now: the gateway's BLE connection is switched off so the Powerpal is free, Home Assistant pairs with it, and the gateway's entry is disabled so its entities, history and Energy dashboard carry on under Powerpal Direct. Afterwards, power the ESP32 off.",
+        "title": "Take over from the ESP32 gateway?",
+        "description": "{situation}\n\nTaking over carries the gateway on under Powerpal Direct: the same entity IDs, so its history, long-term statistics, Energy dashboard and automations continue, and Total Energy starts from where the gateway left off. Nothing of the gateway's is touched unless you say yes.",
         "data": {
           "take_over": "Take over from the gateway"
         },
         "data_description": {
-          "take_over": "Untick to set up Powerpal Direct alongside the gateway instead, with its own entities."
+          "take_over": "Untick to set up Powerpal Direct alongside the gateway instead, with its own entities and totals starting from zero."
         }
       }
     },

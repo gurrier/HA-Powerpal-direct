@@ -20,6 +20,7 @@ from custom_components.powerpal_direct.const import (
     CONF_PAIRING_CODE,
     CONF_POLL_INTERVAL,
     CONF_PULSES_PER_KWH,
+    CONF_TAKE_OVER,
     DOMAIN,
 )
 from custom_components.powerpal_direct.gateway import (
@@ -125,7 +126,7 @@ async def test_takes_over_entity_ids_and_carries_on(hass: HomeAssistant) -> None
         domain=DOMAIN,
         unique_id=ADDRESS,
         title="Powerpal 00002ba7",
-        data={CONF_PAIRING_CODE: 123123},
+        data={CONF_PAIRING_CODE: 123123, CONF_TAKE_OVER: True},
         options={
             CONF_PULSES_PER_KWH: 1000.0,
             CONF_NOTIFICATION_INTERVAL: 1,
@@ -254,6 +255,50 @@ async def test_a_live_gateway_is_still_present_and_a_disabled_one_adoptable(hass
     assert "sensor.bedroom_powerpal_gateway_heap_free" not in found.adoptable.values()
 
 
+async def test_a_disabled_gateway_is_left_alone_without_the_users_say_so(hass: HomeAssistant) -> None:
+    """Records registered to another integration are only moved on the stored take-over choice."""
+    from homeassistant.config_entries import ConfigEntryDisabler
+
+    hass.config.components.add("bluetooth_adapters")
+    esphome_entry = MockConfigEntry(domain="esphome", unique_id="84:cc:a8:52:12:7c", title="BLEProxy 52127c")
+    esphome_entry.add_to_hass(hass)
+    register_gateway_under(hass, esphome_entry, disabled=False)
+    await hass.config_entries.async_set_disabled_by(esphome_entry.entry_id, ConfigEntryDisabler.USER)
+    for entity_id in GATEWAY.values():
+        hass.states.async_remove(entity_id)
+    registry = er.async_get(hass)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        title="Powerpal 00002ba7",
+        data={CONF_PAIRING_CODE: 123123, CONF_TAKE_OVER: False},
+        options={
+            CONF_PULSES_PER_KWH: 1000.0,
+            CONF_NOTIFICATION_INTERVAL: 1,
+            CONF_POLL_INTERVAL: 0,
+            CONF_COST_PER_KWH: 0.0,
+        },
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch.object(FakeClient, "device", FakePowerpal(), create=True),
+        patch("custom_components.powerpal_direct.coordinator.PowerpalClient", FakeClient),
+        patch("custom_components.powerpal_direct.coordinator.bluetooth") as bluetooth,
+    ):
+        bluetooth.async_ble_device_from_address.return_value = BLE_DEVICE
+        bluetooth.async_register_callback.return_value = MagicMock()
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        for entity_id in GATEWAY.values():
+            still = registry.async_get(entity_id)
+            assert still is not None and still.platform == "esphome" and still.disabled_by is not None, entity_id
+        ours = {e.entity_id for e in er.async_entries_for_config_entry(registry, entry.entry_id)}
+        assert ours and not ours & set(GATEWAY.values())
+        assert hass.states.get("sensor.powerpal_00002ba7_total_energy").state == "0.0"
+
+
 async def test_adopts_a_disabled_gateways_entity_records(hass: HomeAssistant) -> None:
     from homeassistant.config_entries import ConfigEntryDisabler
 
@@ -281,7 +326,7 @@ async def test_adopts_a_disabled_gateways_entity_records(hass: HomeAssistant) ->
         domain=DOMAIN,
         unique_id=ADDRESS,
         title="Powerpal 00002ba7",
-        data={CONF_PAIRING_CODE: 123123},
+        data={CONF_PAIRING_CODE: 123123, CONF_TAKE_OVER: True},
         options={
             CONF_PULSES_PER_KWH: 1000.0,
             CONF_NOTIFICATION_INTERVAL: 1,

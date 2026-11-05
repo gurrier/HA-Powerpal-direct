@@ -174,12 +174,15 @@ the Energy dashboard, utility meters and automations all carry on without editin
    Direct reads the key from the Powerpal.
 2. **Add Powerpal Direct** (Settings → Devices & services → Add integration). While the
    gateway is running, the Powerpal can't be discovered, because the gateway holds its only
-   connection; setup notices the gateway and offers to **take over**. Say yes and it does
-   the rest: it switches the gateway's own BLE connection off so the Powerpal is free, waits
-   for it, pairs with it, and disables the gateway's ESPHome entry so its entity records can
-   be adopted. Setup also works out the gateway's pulses per kWh from its recorded Pulses
-   and Watt Hours and fills it in for you to confirm. It must match the gateway's, or the
-   total carried over is rescaled. Cost per kWh is carried over the same way.
+   connection; setup notices the gateway and asks whether to **take over**. Say yes and it
+   does the rest: it switches the gateway's own BLE connection off so the Powerpal is free,
+   waits for it, pairs with it, and disables the gateway's ESPHome entry so its entity
+   records can be adopted. The same question is asked if you had already disabled or
+   deleted the gateway's entry yourself; nothing of the gateway's is touched unless you say
+   yes, and your answer is kept with the entry. Setup also works out the gateway's pulses
+   per kWh from its recorded Pulses and Watt Hours and fills it in for you to confirm. It
+   must match the gateway's, or the total carried over is rescaled. Cost per kWh is carried
+   over the same way.
 3. **Power the ESP32 off** (or reflash it as a Bluetooth proxy). Its connection switch comes
    back on if it restarts, and it would then take the Powerpal back.
 4. **Everything carries on.** Powerpal Direct adopts the gateway's entity records whole:
@@ -203,8 +206,9 @@ Things to know:
   services → Entities, delete the old `…total_energy_cost` (shown as unavailable), then
   rename `…total_energy_cost_2` to that ID.
 - Only entities that don't exist yet are taken over this way. If Powerpal Direct was already
-  set up alongside the gateway, delete Powerpal Direct as well, then add it again after
-  step 2. The Bluetooth bond is kept, so it only needs the pairing code again.
+  set up alongside the gateway (or you answered no to the take-over), delete Powerpal
+  Direct, then add it again and answer yes. The Bluetooth bond is kept, so it only needs the
+  pairing code again.
 - The gateway's entities are recognised by the names the ESPHome component documents. If
   you renamed them in your YAML, rename Powerpal Direct's entities by hand instead
   (Settings → Entities → the entity → entity ID). Home Assistant then attaches the old

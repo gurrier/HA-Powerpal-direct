@@ -8,9 +8,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, STORAGE_VERSION
+from .const import CONF_TAKE_OVER, DOMAIN, STORAGE_VERSION
 from .coordinator import PowerpalConfigEntry, PowerpalCoordinator
-from .gateway import async_adopt_gateway_entities, async_take_over_entity_ids, find_gateway_entities
+from .gateway import GatewayEntities, async_adopt_gateway_entities, async_take_over_entity_ids, find_gateway_entities
 from .hourly import async_clear_hourly_statistic
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR, Platform.SWITCH]
@@ -18,8 +18,13 @@ PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR, Platform.
 
 async def async_setup_entry(hass: HomeAssistant, entry: PowerpalConfigEntry) -> bool:
     coordinator = PowerpalCoordinator(hass, entry)
-    # Before the entities are added, so they can take over a removed gateway's entity IDs.
-    coordinator.gateway = find_gateway_entities(hass)
+    # An ESP32 gateway's entities are only looked at when the user said so at setup: the
+    # gateway step stores the answer, and nothing of the gateway's is touched without it.
+    # Found before the entities are added, so they can take over its entity IDs.
+    if entry.data.get(CONF_TAKE_OVER):
+        coordinator.gateway = find_gateway_entities(hass)
+    else:
+        coordinator.gateway = GatewayEntities(available={}, adoptable={}, still_present={})
     entry.runtime_data = coordinator
     await coordinator.async_load()
     if coordinator.first_setup and coordinator.gateway.adoptable:

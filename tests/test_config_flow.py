@@ -66,7 +66,7 @@ async def test_bluetooth_discovery(hass: HomeAssistant, validate: AsyncMock) -> 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Powerpal 00002ba7"
     assert result["result"].unique_id == ADDRESS
-    assert result["data"] == {CONF_PAIRING_CODE: 123123}
+    assert result["data"] == {CONF_PAIRING_CODE: 123123, CONF_TAKE_OVER: False}
     assert result["options"] == {
         CONF_PULSES_PER_KWH: 800.0,
         CONF_NOTIFICATION_INTERVAL: 1,
@@ -282,6 +282,7 @@ async def test_takes_over_from_a_running_gateway(
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["result"].unique_id == ADDRESS
+    assert result["data"][CONF_TAKE_OVER] is True
     assert hass.config_entries.async_get_entry(gateway_entry.entry_id).disabled_by is ConfigEntryDisabler.USER
 
 
@@ -303,31 +304,80 @@ async def test_declining_the_take_over(
     hass: HomeAssistant, validate: AsyncMock, gateway_entry: MockConfigEntry
 ) -> None:
     turn_off = async_mock_service(hass, "switch", "turn_off")
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
-    assert result["step_id"] == "gateway"
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_TAKE_OVER: False})
-    assert result["step_id"] == "user"  # the fixture's discovered Powerpal, set up alongside
+    with patch(f"{FLOW}.bluetooth.async_discovered_service_info", return_value=[]):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+        assert result["step_id"] == "gateway"
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_TAKE_OVER: False})
+    # Nothing is released, so the Powerpal stays out of reach until it's freed by hand.
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_devices_found"
     assert turn_off == []
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"address": ADDRESS})
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_PAIRING_CODE: "123123", CONF_PULSES_PER_KWH: 1000}
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert hass.config_entries.async_get_entry(gateway_entry.entry_id).disabled_by is None
 
 
 async def test_discovered_while_the_gateway_entry_is_still_enabled(
     hass: HomeAssistant, validate: AsyncMock, gateway_entry: MockConfigEntry
 ) -> None:
-    # The ESP32 is off (the Powerpal advertises) but its entry was never disabled: pairing
-    # succeeds, and the entry is disabled so the records can be adopted at setup.
+    # The ESP32 is off (the Powerpal advertises) but its entry was never disabled. Taking
+    # over is still asked, and only then is the entry disabled once pairing succeeds.
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
     )
+    assert result["step_id"] == "gateway"
+    assert "still enabled" in result["description_placeholders"]["situation"]
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_TAKE_OVER: True})
     assert result["step_id"] == "pair"
     assert "BLEProxy 52127c" in result["description_placeholders"]["gateway_note"]
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_PAIRING_CODE: "123123", CONF_PULSES_PER_KWH: 1000}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_TAKE_OVER] is True
     assert hass.config_entries.async_get_entry(gateway_entry.entry_id).disabled_by is ConfigEntryDisabler.USER
+
+
+async def test_a_gateway_disabled_by_hand_is_not_adopted_unasked(
+    hass: HomeAssistant, validate: AsyncMock, gateway_entry: MockConfigEntry
+) -> None:
+    # The user disabled the gateway's entry themselves before adding Powerpal Direct: its
+    # entity records could be adopted, but only if they say so.
+    await hass.config_entries.async_set_disabled_by(gateway_entry.entry_id, ConfigEntryDisabler.USER)
+    hass.states.async_remove("switch.bedroom_powerpal_gateway_powerpal_ble_connection")
+    hass.states.async_remove("sensor.powerpal_gateway_powerpal_total_energy")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+    )
+    assert result["step_id"] == "gateway"
+    assert "is disabled" in result["description_placeholders"]["situation"]
+    assert result["description_placeholders"]["gateway"] == "BLEProxy 52127c"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_TAKE_OVER: False})
+    assert result["step_id"] == "pair"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PAIRING_CODE: "123123", CONF_PULSES_PER_KWH: 1000}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_TAKE_OVER] is False
+
+
+async def test_a_removed_gateways_entity_ids_are_offered(
+    hass: HomeAssistant, validate: AsyncMock, gateway_entry: MockConfigEntry
+) -> None:
+    registry = er.async_get(hass)
+    for entity_id in (
+        "switch.bedroom_powerpal_gateway_powerpal_ble_connection",
+        "sensor.powerpal_gateway_powerpal_total_energy",
+    ):
+        registry.async_remove(entity_id)
+        hass.states.async_remove(entity_id)
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    assert result["step_id"] == "user"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"address": ADDRESS})
+    assert result["step_id"] == "gateway"
+    assert "removed" in result["description_placeholders"]["situation"]
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_TAKE_OVER: True})
+    assert result["step_id"] == "pair"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PAIRING_CODE: "123123", CONF_PULSES_PER_KWH: 1000}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_TAKE_OVER] is True
