@@ -126,6 +126,16 @@ async def test_pair_errors_then_recover(
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
+async def test_user_with_the_only_powerpal_already_configured(hass: HomeAssistant) -> None:
+    """A configured Powerpal is connected, so it doesn't advertise: say it's set up, not missing."""
+    MockConfigEntry(domain=DOMAIN, unique_id=ADDRESS, title="Powerpal 00002ba7").add_to_hass(hass)
+    with patch(f"{FLOW}.bluetooth.async_discovered_service_info", return_value=[service_info()]):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "all_configured"
+    assert result["description_placeholders"] == {"names": "Powerpal 00002ba7"}
+
+
 async def test_already_configured(hass: HomeAssistant) -> None:
     MockConfigEntry(domain=DOMAIN, unique_id=ADDRESS).add_to_hass(hass)
     result = await hass.config_entries.flow.async_init(

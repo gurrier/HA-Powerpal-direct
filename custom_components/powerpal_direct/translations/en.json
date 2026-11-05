@@ -55,6 +55,7 @@
     },
     "abort": {
       "already_configured": "This Powerpal is already set up.",
+      "all_configured": "{names} is already set up and connected to Home Assistant, so it isn't advertising and nothing new was found. To change its pairing code, use Reconfigure on the existing entry. To add a second Powerpal, make sure that one is advertising: nothing else connected to it.",
       "no_devices_found": "No Powerpal found. A Powerpal stops advertising while anything is connected to it, so turn off any ESP32 gateway and close the Powerpal app, then try again.",
       "reauth_successful": "The pairing code was updated.",
       "reconfigure_successful": "The pairing code was updated."

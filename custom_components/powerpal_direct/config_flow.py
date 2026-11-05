@@ -129,6 +129,14 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
 
         self._async_collect_discovered()
         if not self._discovered:
+            # A configured Powerpal is connected to Home Assistant, so it doesn't advertise
+            # and isn't listed. Someone who clicks Add after installing through HACS, with
+            # the integration already running, lands here: say so, rather than blaming a
+            # gateway or the app.
+            if configured := [entry.title for entry in self._async_current_entries(include_ignore=False)]:
+                return self.async_abort(
+                    reason="all_configured", description_placeholders={"names": ", ".join(configured)}
+                )
             return self.async_abort(reason="no_devices_found")
 
         return self.async_show_form(
