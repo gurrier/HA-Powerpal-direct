@@ -104,8 +104,10 @@ async def test_setup_streams_readings_into_entities(
         await hass.services.async_call(
             "switch", "turn_on", {"entity_id": "switch.powerpal_00002ba7_cloud_upload"}, blocking=True
         )
-        device.client.notify(Measurement(T0 + 60, 3))
-        await hass.async_block_till_done()
+        # Readings go up once per half-hour window, a minute into it.
+        with patch("custom_components.powerpal_direct.cloud.time.time", return_value=(T0 // 1800 + 2) * 1800 + 61):
+            device.client.notify(Measurement(T0 + 60, 3))
+            await hass.async_block_till_done()
         assert aioclient_mock.call_count == 1
         assert aioclient_mock.mock_calls[0][2] == [
             {"cost": 0.0009, "is_peak": False, "pulses": 3, "timestamp": T0 + 60, "watt_hours": 3}

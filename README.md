@@ -145,12 +145,19 @@ While Home Assistant holds the Powerpal's connection, the Powerpal app can't con
 the app and Powerpal's cloud stop getting your readings. Turn on **Cloud Upload** to send
 them from Home Assistant instead:
 
-- Each reading is sent with its own timestamp, including readings recovered from the
-  Powerpal's history after an outage.
+- Readings go up once every half hour, all of them in one request with their own
+  timestamps, including readings recovered from the Powerpal's history after an outage.
+  **Last Cloud Upload** moves twice an hour.
 - It uses the API key and device ID read from the Powerpal itself, so there's nothing to
   copy or keep in `secrets.yaml`.
 - If Powerpal's cloud can't be reached, readings wait (across restarts too, up to a week's
   worth) and go up once it's back.
+- Why half-hourly: since 7 November 2026, Powerpal's cloud keeps only the first upload it
+  stores in each half-hour window and discards any reading older than the newest it
+  already holds, while answering every upload with success. Sending a reading a minute,
+  as versions up to 1.0.2 did, left it with two readings an hour, and what a window's
+  upload doesn't carry can't be sent later. One complete batch per window is the only way
+  it keeps everything.
 - It stays as you set it across restarts. Turning it off stops sending immediately, and
   drops anything still waiting.
 
