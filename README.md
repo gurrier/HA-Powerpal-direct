@@ -158,6 +158,14 @@ them from Home Assistant instead:
   as versions up to 1.0.2 did, left it with two readings an hour, and what a window's
   upload doesn't carry can't be sent later. One complete batch per window is the only way
   it keeps everything.
+- Gaps in Powerpal's cloud are permanent. Every attempt to fill a period behind the
+  cloud's newest record has been discarded, from this integration and from the Powerpal
+  app alike: the app syncs days of history from the Powerpal into the phone's own copy,
+  which is what it then shows you, but the cloud kept only the current half hour of it.
+  The line is the newest timestamp the cloud has *seen*, not the newest it stored, so
+  two uploaders taking turns on one Powerpal leave holes neither can fill. Keep one
+  uploader, let it send every reading in order, and leave the phone app on Remote
+  Connection while Home Assistant holds the device.
 - It stays as you set it across restarts. Turning it off stops sending immediately, and
   drops anything still waiting.
 
