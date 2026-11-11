@@ -69,8 +69,9 @@ async def test_one_request_per_half_hour_window_with_everything_pending(
     aioclient_mock.post(URL, status=200)
     uploader = CloudUploader(hass, "entry")
     uploader.set_enabled(True)
+    # A day and five minutes of readings, all from half hours already over.
     for minute in range(MAX_BATCH + 5):
-        uploader.add(T0 + minute * 60, 1, 1, 0.0)
+        uploader.add(WINDOW - (MAX_BATCH + 5 - minute) * 60, 1, 1, 0.0)
     with at(WINDOW_SETTLE_S + 1):
         await uploader.async_flush(DEVICE_ID, API_KEY)
         # A second request in the same window would be thrown away by the server.
@@ -83,6 +84,24 @@ async def test_one_request_per_half_hour_window_with_everything_pending(
     # Oldest first, so nothing is ever older than what the server already holds.
     first = sent(aioclient_mock)[0]
     assert [r["timestamp"] for r in first] == sorted(r["timestamp"] for r in first)
+
+
+async def test_the_current_half_hour_waits_for_the_next_window(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The server drops a reading from the half hour that has only just begun."""
+    aioclient_mock.post(URL, status=200)
+    uploader = CloudUploader(hass, "entry")
+    uploader.set_enabled(True)
+    uploader.add(WINDOW - 60, 5, 5, 0.0)  # the previous window's last minute
+    uploader.add(WINDOW, 6, 6, 0.0)  # the first minute of the window being sent in
+    with at(WINDOW_SETTLE_S + 5):
+        await uploader.async_flush(DEVICE_ID, API_KEY)
+    assert [[r["timestamp"] for r in b] for b in sent(aioclient_mock)] == [[WINDOW - 60]]
+    assert uploader.pending == 1
+    with at(WINDOW_SETTLE_S + 5, windows_later=1):
+        await uploader.async_flush(DEVICE_ID, API_KEY)
+    assert [[r["timestamp"] for r in b] for b in sent(aioclient_mock)] == [[WINDOW - 60], [WINDOW]]
 
 
 async def test_waits_a_minute_into_the_window(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker) -> None:
