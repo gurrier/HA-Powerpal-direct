@@ -90,6 +90,10 @@ MAX_POWER_INTERVAL_S = 300
 # History replies arrive at 20-70 records/s; give up on a burst that goes quiet this long.
 HISTORY_IDLE_TIMEOUT_S = 15
 HISTORY_MIN_RATE = 10  # records/s, for the overall timeout
+# On reconnecting, the Powerpal often sends the readings it couldn't deliver by itself,
+# sometimes only after a replay request for them has come back empty. Give it this long
+# before calling the gap unfilled.
+CATCH_UP_PUSH_GRACE_S = 5
 
 
 @dataclass(slots=True)
@@ -99,7 +103,10 @@ class CatchUpResult:
     requested_start: int
     requested_end: int
     expected: int
+    # Replayed in answer to the request, and how many of the expected readings are
+    # counted by the end, whichever way they came.
     received: int
+    filled: int
     counted: int
     unrecoverable_minutes: int
     finished_at: datetime
@@ -477,7 +484,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         if (catch_up := self.data.last_catch_up) is not None and catch_up.finished_at > dt_util.utcnow() - timedelta(
             minutes=1
         ):
-            text += f"; recovered {catch_up.received} of {catch_up.expected} readings from the Powerpal"
+            text += f"; recovered {catch_up.filled} of {catch_up.expected} readings from the Powerpal"
         self.data.last_stall = text[:255]
         self._drop_reason = None
         self._drop_since = None
@@ -763,28 +770,36 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         counted = self._count(records)
         self._flush_pending_live()
 
+        def filled() -> int:
+            watermark = self.energy.watermark
+            if watermark is None:
+                return 0
+            return max(0, min(expected, round((watermark - first_wanted) / RECORD_INTERVAL_S)))
+
+        if filled() < expected and client.is_connected:
+            # The Powerpal may be about to send them itself; they count as they arrive.
+            await asyncio.sleep(CATCH_UP_PUSH_GRACE_S)
+        got = filled()
         self.data.last_catch_up = CatchUpResult(
             requested_start=start,
             requested_end=end,
             expected=expected,
             received=len(records),
+            filled=got,
             counted=counted,
             unrecoverable_minutes=unrecoverable,
             finished_at=dt_util.utcnow(),
         )
-        # On reconnecting, the Powerpal often sends the readings it couldn't deliver by
-        # itself, before they're asked for. Only a gap that's still there is worth a warning.
-        watermark = self.energy.watermark
-        still_missing = watermark is None or watermark < end - RECORD_INTERVAL_S
-        if len(records) >= expected or not still_missing:
+        if got >= expected:
             _LOGGER.info(
-                "%s: Caught up: %s of %s readings replayed, the rest had already arrived",
+                "%s: Caught up: %s readings, %s replayed and %s sent by the Powerpal on its own",
                 self.address,
-                len(records),
                 expected,
+                len(records),
+                max(0, expected - len(records)),
             )
         else:
-            _LOGGER.warning("%s: Caught up only %s of %s stored readings", self.address, len(records), expected)
+            _LOGGER.warning("%s: Caught up only %s of %s stored readings", self.address, got, expected)
 
     async def _async_fetch_history(self, client: PowerpalClient, start: int, end: int) -> list[Measurement]:
         """Have the Powerpal replay its stored readings in [start, end], and collect them.

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Generator
+import logging
 import time
 from unittest.mock import MagicMock, patch
 
@@ -29,6 +30,8 @@ from custom_components.powerpal_direct.energy import EnergyState
 from custom_components.powerpal_direct.protocol import HistoryRange, Measurement
 
 from .fakes import ADDRESS, BLE_DEVICE, PAIRING_CODE, T0, FakeClient, FakePowerpal, until
+
+COORDINATOR = "custom_components.powerpal_direct.coordinator"
 
 
 @pytest.fixture
@@ -280,6 +283,39 @@ async def test_clock_corrected_only_when_it_drifts(hass: HomeAssistant, device: 
     assert not coordinator._clock_correction_due
     await device.client.disconnect()
     await asyncio.wait_for(session, 1)
+
+
+async def test_readings_the_powerpal_sends_on_its_own_fill_the_gap(
+    hass: HomeAssistant, device: FakePowerpal, caplog: pytest.LogCaptureFixture
+) -> None:
+    """After a replay request comes back empty, the Powerpal sends the backlog itself."""
+    coordinator = make_coordinator(hass, poll_interval=15)
+    coordinator.energy.state = EnergyState(watermark=T0 - 300)
+    client = FakeClient(BLE_DEVICE, PAIRING_CODE)
+
+    async def replay_nothing_then_push(start: int, end: int) -> None:
+        device.history_requests.append((start, end))
+        loop = asyncio.get_running_loop()
+        for i, timestamp in enumerate(sorted(t for t in device.records if start <= t <= end)):
+            # After the replay request has been given up on (it polls once a second).
+            loop.call_later(1.2 + i * 0.005, client.notify, Measurement(timestamp, device.records[timestamp]))
+
+    client.request_history = replay_nothing_then_push  # type: ignore[method-assign]
+    await client.connect()
+    await client.subscribe(coordinator._on_measurement, MagicMock())
+    coordinator._client = client
+    with (
+        patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03),
+        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 0.6),
+        caplog.at_level(logging.INFO),
+    ):
+        await coordinator._async_catch_up(client, None)
+
+    result = coordinator.data.last_catch_up
+    assert result is not None and (result.expected, result.received, result.filled) == (4, 0, 4)
+    assert coordinator.energy.watermark == T0 - 60
+    assert "Caught up only" not in caplog.text
+    assert "4 sent by the Powerpal on its own" in caplog.text
 
 
 async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, device: FakePowerpal) -> None:
