@@ -34,8 +34,9 @@ won't even see it until it's free.
 
 ### HACS
 
-1. HACS → ⋮ → **Custom repositories** → add this repository's URL as an **Integration**.
-2. Install **Powerpal Direct** and restart Home Assistant.
+Powerpal Direct is in the HACS default store: open HACS, search for **Powerpal Direct**,
+download it, and restart Home Assistant. (If your HACS hasn't picked it up yet, HACS → ⋮ →
+**Custom repositories** → add this repository's URL as an **Integration** does the same.)
 
 ### Manual
 

@@ -104,6 +104,19 @@ async def test_the_current_half_hour_waits_for_the_next_window(
     assert [[r["timestamp"] for r in b] for b in sent(aioclient_mock)] == [[WINDOW - 60], [WINDOW]]
 
 
+async def test_a_replayed_reading_is_sent_on_its_minute(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The Powerpal re-stamps replayed readings a few seconds late; the server wants the minute."""
+    aioclient_mock.post(URL, status=200)
+    uploader = CloudUploader(hass, "entry")
+    uploader.set_enabled(True)
+    uploader.add(T0 + 3, 5, 5, 0.0)
+    with at(WINDOW_SETTLE_S + 1):
+        await uploader.async_flush(DEVICE_ID, API_KEY)
+    assert [r["timestamp"] for r in sent(aioclient_mock)[0]] == [T0]
+
+
 async def test_waits_a_minute_into_the_window(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker) -> None:
     """The previous window's last reading arrives a few seconds past the half hour."""
     aioclient_mock.post(URL, status=200)

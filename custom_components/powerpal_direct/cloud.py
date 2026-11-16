@@ -39,6 +39,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, STORAGE_VERSION
+from .protocol import RECORD_INTERVAL_S
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -97,8 +98,12 @@ class CloudUploader:
     def add(self, timestamp: int, pulses: int, watt_hours: int, cost: float) -> None:
         if not self.enabled:
             return
+        # The Powerpal re-stamps a reading it replays after a dropped link a few seconds
+        # past its minute, and the server silently rejects any timestamp that isn't on
+        # the minute. The minute is the reading's identity, so send that.
+        minute = timestamp - timestamp % RECORD_INTERVAL_S
         self._pending.append(
-            {"cost": cost, "is_peak": False, "pulses": pulses, "timestamp": timestamp, "watt_hours": watt_hours}
+            {"cost": cost, "is_peak": False, "pulses": pulses, "timestamp": minute, "watt_hours": watt_hours}
         )
         if len(self._pending) > MAX_PENDING:
             del self._pending[: len(self._pending) - MAX_PENDING]
