@@ -32,11 +32,12 @@ won't even see it until it's free.
 
 ## Installation
 
-### HACS
+### Marketplace (HACS)
 
-Powerpal Direct is in the HACS default store: open HACS, search for **Powerpal Direct**,
-download it, and restart Home Assistant. (If your HACS hasn't picked it up yet, HACS → ⋮ →
-**Custom repositories** → add this repository's URL as an **Integration** does the same.)
+Powerpal Direct is in the community store: in Home Assistant 2026.11 or later open
+**Settings → Marketplace**, in earlier versions open **HACS**, search for **Powerpal
+Direct**, download it, and restart Home Assistant. (If the store hasn't picked it up yet,
+⋮ → **Custom repositories** → add this repository's URL as an **Integration** does the same.)
 
 ### Manual
 
