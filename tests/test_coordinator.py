@@ -285,103 +285,65 @@ async def test_clock_corrected_only_when_it_drifts(hass: HomeAssistant, device: 
     await asyncio.wait_for(session, 1)
 
 
+def _replay_nothing(device: FakePowerpal):
+    async def replay_nothing(start: int, end: int) -> None:
+        device.history_requests.append((start, end))
+
+    return replay_nothing
+
+
+async def _reconnected(hass: HomeAssistant, device: FakePowerpal) -> tuple[PowerpalCoordinator, FakeClient]:
+    """A coordinator five minutes behind, on a connection whose replay requests return nothing."""
+    coordinator = make_coordinator(hass, poll_interval=15)
+    coordinator.energy.state = EnergyState(watermark=T0 - 300)
+    client = FakeClient(BLE_DEVICE, PAIRING_CODE)
+    client.request_history = _replay_nothing(device)  # type: ignore[method-assign]
+    await client.connect()
+    await client.subscribe(coordinator._on_measurement, MagicMock())
+    coordinator._client = client
+    return coordinator, client
+
+
 async def test_readings_the_powerpal_sends_on_its_own_fill_the_gap(
     hass: HomeAssistant, device: FakePowerpal, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """After a replay request comes back empty, the Powerpal sends the backlog itself."""
-    coordinator = make_coordinator(hass, poll_interval=15)
-    coordinator.energy.state = EnergyState(watermark=T0 - 300)
-    client = FakeClient(BLE_DEVICE, PAIRING_CODE)
-
-    async def replay_nothing_then_push(start: int, end: int) -> None:
-        device.history_requests.append((start, end))
-        loop = asyncio.get_running_loop()
-        for i, timestamp in enumerate(sorted(t for t in device.records if start <= t <= end)):
-            # After the replay request has been given up on (it polls once a second).
-            loop.call_later(1.2 + i * 0.005, client.notify, Measurement(timestamp, device.records[timestamp]))
-
-    client.request_history = replay_nothing_then_push  # type: ignore[method-assign]
-    await client.connect()
-    await client.subscribe(coordinator._on_measurement, MagicMock())
-    coordinator._client = client
-    with (
-        patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03),
-        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 5),
-        caplog.at_level(logging.INFO),
-    ):
+    """After an empty replay, the Powerpal sends the backlog itself just before its next live
+    reading. Nothing is lost, and nothing is said about it."""
+    coordinator, client = await _reconnected(hass, device)
+    with patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03), caplog.at_level(logging.INFO):
         await coordinator._async_catch_up(client, None)
-        # The replay came back empty, but no verdict yet: the readings may still come.
-        assert coordinator.data.last_catch_up is None
-        assert "Caught up" not in caplog.text
-        await until(lambda: coordinator.data.last_catch_up is not None, 3)
-
-    result = coordinator.data.last_catch_up
-    assert (result.expected, result.received, result.filled) == (4, 0, 4)
-    assert coordinator.energy.watermark == T0 - 60
-    assert "Caught up only" not in caplog.text
-    assert "4 sent by the Powerpal on its own" in caplog.text
-
-
-async def test_a_remade_connection_joins_the_pending_verdict(
-    hass: HomeAssistant, device: FakePowerpal, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The Powerpal drops the first connections after a restart; each one's catch-up is the same gap."""
-    coordinator = make_coordinator(hass, poll_interval=15)
-    coordinator.energy.state = EnergyState(watermark=T0 - 300)
-    client = FakeClient(BLE_DEVICE, PAIRING_CODE)
-
-    async def replay_nothing(start: int, end: int) -> None:
-        device.history_requests.append((start, end))
-
-    client.request_history = replay_nothing  # type: ignore[method-assign]
-    await client.connect()
-    await client.subscribe(coordinator._on_measurement, MagicMock())
-    coordinator._client = client
-    with (
-        patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03),
-        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 5),
-        caplog.at_level(logging.INFO),
-    ):
+        assert coordinator.data.last_catch_up.received == 0
+        # The device drops the first connections after a restart; each one asks again.
         await coordinator._async_catch_up(client, None)
         await coordinator._async_catch_up(client, None)
-        await coordinator._async_catch_up(client, None)
-        assert coordinator.data.last_catch_up is None
-        assert "Caught up" not in caplog.text
-        # The readings come on their own, on the connection that finally holds.
-        for timestamp in sorted(t for t in device.records if t > T0 - 300):
+        for timestamp in sorted(t for t in device.records if T0 - 300 < t < T0):
             client.notify(Measurement(timestamp, device.records[timestamp]))
-        await until(lambda: coordinator.data.last_catch_up is not None, 3)
-    result = coordinator.data.last_catch_up
-    assert (result.expected, result.received, result.filled) == (4, 0, 4)
-    assert caplog.text.count("Caught up") == 1
-    assert "Caught up only" not in caplog.text
+        device.add_minutes(T0, 1, pulses=6)
+        client.notify(Measurement(T0, 6))
+    assert coordinator.energy.watermark == T0
+    assert coordinator.energy.state.total_pulses == 4 * 5 + 6
+    assert not coordinator._catch_up_requested.is_set()
+    assert "lost" not in caplog.text and "WARNING" not in caplog.text
 
 
-async def test_a_gap_still_open_at_the_deadline_is_a_warning(
+async def test_a_gap_the_powerpal_cannot_fill_is_reported_once(
     hass: HomeAssistant, device: FakePowerpal, caplog: pytest.LogCaptureFixture
 ) -> None:
-    coordinator = make_coordinator(hass, poll_interval=15)
-    coordinator.energy.state = EnergyState(watermark=T0 - 300)
-    client = FakeClient(BLE_DEVICE, PAIRING_CODE)
-
-    async def replay_nothing(start: int, end: int) -> None:
-        device.history_requests.append((start, end))
-
-    client.request_history = replay_nothing  # type: ignore[method-assign]
-    await client.connect()
-    await client.subscribe(coordinator._on_measurement, MagicMock())
-    coordinator._client = client
-    with (
-        patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03),
-        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 0.3),
-        caplog.at_level(logging.INFO),
-    ):
+    """No replay and no push: the next live reading passes over the gap, and that's when
+    the loss is certain and said, with the count."""
+    coordinator, client = await _reconnected(hass, device)
+    with patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03), caplog.at_level(logging.INFO):
         await coordinator._async_catch_up(client, None)
-        assert coordinator.data.last_catch_up is None
-        await until(lambda: coordinator.data.last_catch_up is not None, 3)
-    result = coordinator.data.last_catch_up
-    assert (result.expected, result.received, result.filled) == (4, 0, 0)
-    assert "Caught up only 0 of 4" in caplog.text
+        assert "lost" not in caplog.text
+        device.add_minutes(T0, 1, pulses=6)
+        client.notify(Measurement(T0, 6))  # a gap of four minutes before it
+        assert coordinator._catch_up_requested.is_set()
+        await coordinator._async_catch_up(client, coordinator._history_window)
+    assert coordinator.energy.watermark == T0
+    assert coordinator.energy.state.total_pulses == 6
+    assert caplog.text.count("could not be recovered from the Powerpal and are lost") == 1
+    assert "4 readings between" in caplog.text
+    assert coordinator.data.last_stall == "4 readings lost: they couldn't be recovered from the Powerpal"
 
 
 async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, device: FakePowerpal) -> None:
@@ -401,7 +363,7 @@ async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, dev
     session = asyncio.create_task(coordinator._async_session(BLE_DEVICE))
     await until(lambda: coordinator.data.last_stall is not None)
     assert "the link dropped" in coordinator.data.last_stall
-    assert "recovered 2 of 2 readings" in coordinator.data.last_stall
+    assert "2 readings replayed from the Powerpal's history" in coordinator.data.last_stall
     await device.client.disconnect()
     await asyncio.wait_for(session, 1)
 

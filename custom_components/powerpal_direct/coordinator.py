@@ -21,7 +21,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
-from homeassistant.helpers.event import async_call_later, async_track_time_change, async_track_time_interval
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -90,27 +90,6 @@ MAX_POWER_INTERVAL_S = 300
 # History replies arrive at 20-70 records/s; give up on a burst that goes quiet this long.
 HISTORY_IDLE_TIMEOUT_S = 15
 HISTORY_MIN_RATE = 10  # records/s, for the overall timeout
-# On reconnecting, the Powerpal often sends the readings it couldn't deliver by itself,
-# sometimes only after a replay request for them has come back empty: it sends them just
-# ahead of its next live reading, up to a minute later, and the first connection after a
-# restart may drop and be remade before it does. The verdict on a gap is therefore given
-# this long after the replay, or as soon as the readings are counted, whichever is first,
-# without holding the session up meanwhile.
-CATCH_UP_PUSH_GRACE_S = 90
-
-
-@dataclass(slots=True)
-class PendingGap:
-    """A catch-up whose readings may still be on their way, by replay or by the Powerpal's own push."""
-
-    start: int
-    end: int
-    expected: int
-    first_wanted: int
-    received: int
-    counted: int
-    unrecoverable: int
-    cancel_deadline: CALLBACK_TYPE | None = None
 
 
 @dataclass(slots=True)
@@ -120,10 +99,7 @@ class CatchUpResult:
     requested_start: int
     requested_end: int
     expected: int
-    # Replayed in answer to the request, and how many of the expected readings are
-    # counted by the end, whichever way they came.
     received: int
-    filled: int
     counted: int
     unrecoverable_minutes: int
     finished_at: datetime
@@ -185,8 +161,6 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._history_done = asyncio.Event()
         self._history_last_arrival = 0.0
         self._pending_live: list[Measurement] = []
-        # The last catch-up, until it's known whether its gap got filled.
-        self._pending_gap: PendingGap | None = None
         self._last_record_arrival: float | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._stopping = False
@@ -295,7 +269,6 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         )
 
     async def async_stop(self) -> None:
-        self._conclude_pending_gap()
         self._stopping = True
         self._wake.set()
         for unsub in self._unsubs:
@@ -504,7 +477,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         if (catch_up := self.data.last_catch_up) is not None and catch_up.finished_at > dt_util.utcnow() - timedelta(
             minutes=1
         ):
-            text += f"; recovered {catch_up.filled} of {catch_up.expected} readings from the Powerpal"
+            text += f"; {catch_up.counted} readings replayed from the Powerpal's history"
         self.data.last_stall = text[:255]
         self._drop_reason = None
         self._drop_since = None
@@ -674,8 +647,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._last_record_arrival = connected_at
 
         await self._async_catch_up(client, None, history)
-        if self._pending_gap is None:
-            self._report_recovered_stall()
+        self._report_recovered_stall()
         if not self.persistent:
             return
 
@@ -761,6 +733,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             self._flush_pending_live()
             return
 
+        after_reconnect = window is None
         if window is None:
             window = (watermark + 1, history.newest)
             last_wanted = history.newest
@@ -789,76 +762,47 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
 
         records = await self._async_fetch_history(client, start, end)
         counted = self._count(records)
-        self._flush_pending_live()
-
-        # The Powerpal may be about to send the rest itself; they count as they arrive.
-        # The verdict waits for that (see _check_pending_gap), with a deadline. A catch-up
-        # for the same gap on a remade connection (the Powerpal drops the first one or two
-        # after a restart) joins the verdict already pending rather than failing it.
-        gap = PendingGap(start, end, expected, first_wanted, len(records), counted, unrecoverable)
-        if (pending := self._pending_gap) is not None:
-            if pending.cancel_deadline is not None:
-                pending.cancel_deadline()
-            gap.first_wanted = min(pending.first_wanted, first_wanted)
-            gap.expected = max(0, round((last_wanted - gap.first_wanted) / RECORD_INTERVAL_S))
-            gap.start = min(pending.start, start)
-            gap.received += pending.received
-            gap.counted += pending.counted
-            gap.unrecoverable = max(pending.unrecoverable, unrecoverable)
-        self._pending_gap = gap
-        if self._gap_filled(gap) >= gap.expected:
-            self._conclude_pending_gap()
-        else:
-            gap.cancel_deadline = async_call_later(self.hass, CATCH_UP_PUSH_GRACE_S, self._on_gap_deadline)
-
-    def _gap_filled(self, gap: PendingGap) -> int:
-        """How many of the readings a catch-up wanted are counted by now, whichever way they came."""
-        watermark = self.energy.watermark
-        if watermark is None:
-            return 0
-        return max(0, min(gap.expected, round((watermark - gap.first_wanted) / RECORD_INTERVAL_S)))
-
-    @callback
-    def _check_pending_gap(self) -> None:
-        if (gap := self._pending_gap) is not None and self._gap_filled(gap) >= gap.expected:
-            self._conclude_pending_gap()
-
-    @callback
-    def _on_gap_deadline(self, _now: datetime) -> None:
-        if self._pending_gap is not None:
-            self._pending_gap.cancel_deadline = None
-            self._conclude_pending_gap()
-
-    @callback
-    def _conclude_pending_gap(self) -> None:
-        """Record and report how a catch-up went, now that its readings have had time to arrive."""
-        if (gap := self._pending_gap) is None:
-            return
-        self._pending_gap = None
-        if gap.cancel_deadline is not None:
-            gap.cancel_deadline()
-        got = self._gap_filled(gap)
         self.data.last_catch_up = CatchUpResult(
-            requested_start=gap.start,
-            requested_end=gap.end,
-            expected=gap.expected,
-            received=gap.received,
-            filled=got,
-            counted=gap.counted,
-            unrecoverable_minutes=gap.unrecoverable,
+            requested_start=start,
+            requested_end=end,
+            expected=expected,
+            received=len(records),
+            counted=counted,
+            unrecoverable_minutes=unrecoverable,
             finished_at=dt_util.utcnow(),
         )
-        if got >= gap.expected:
-            _LOGGER.info(
-                "%s: Caught up: %s readings, %s replayed and %s sent by the Powerpal on its own",
+        if after_reconnect:
+            # On reconnecting there's nothing to judge yet: the Powerpal often answers this
+            # request with nothing and then sends the missed readings itself, just ahead
+            # of its next live reading. Whether the gap gets filled shows at that reading.
+            _LOGGER.log(
+                logging.INFO if records else logging.DEBUG,
+                "%s: Replayed %s of the %s stored readings wanted",
                 self.address,
-                gap.expected,
-                gap.received,
-                max(0, gap.expected - gap.received),
+                len(records),
+                expected,
             )
+            self._flush_pending_live()
+            return
+        # A gap found before a live reading. Whatever hasn't been counted by now, the
+        # Powerpal's own pushes included (they come before the live reading), is passed
+        # over for good once that reading is counted, so this is where a loss is certain.
+        watermark = self.energy.watermark
+        lost = max(0, round((last_wanted - max(watermark or first_wanted, first_wanted)) / RECORD_INTERVAL_S))
+        self._flush_pending_live()
+        if lost:
+            first_lost = max(start, (watermark or first_wanted) + RECORD_INTERVAL_S)
+            _LOGGER.warning(
+                "%s: %s readings between %s and %s could not be recovered from the Powerpal and are lost",
+                self.address,
+                lost,
+                dt_util.as_local(dt_util.utc_from_timestamp(first_lost)).strftime("%H:%M"),
+                dt_util.as_local(dt_util.utc_from_timestamp(last_wanted)).strftime("%H:%M"),
+            )
+            self.data.last_stall = f"{lost} readings lost: they couldn't be recovered from the Powerpal"[:255]
+            self.async_update_listeners()
         else:
-            _LOGGER.warning("%s: Caught up only %s of %s stored readings", self.address, got, gap.expected)
-        self._report_recovered_stall()
+            _LOGGER.info("%s: Gap of %s readings filled, %s by replay", self.address, expected, len(records))
 
     async def _async_fetch_history(self, client: PowerpalClient, start: int, end: int) -> list[Measurement]:
         """Have the Powerpal replay its stored readings in [start, end], and collect them.
@@ -987,7 +931,6 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
             )
         if newest is None:
             return 0
-        self._check_pending_gap()
 
         if self._silent_sessions:
             self._silent_sessions = 0
