@@ -126,6 +126,18 @@ async def test_pair_errors_then_recover(
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
+async def test_an_unexpected_error_comes_back_as_a_form_error(hass: HomeAssistant) -> None:
+    with patch(f"{FLOW}._async_validate", side_effect=OSError(9, "Bad file descriptor")):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PAIRING_CODE: "123123", CONF_PULSES_PER_KWH: 1000}
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "unknown"}
+
+
 async def test_user_with_the_only_powerpal_already_configured(hass: HomeAssistant) -> None:
     """A configured Powerpal is connected, so it doesn't advertise: say it's set up, not missing."""
     MockConfigEntry(domain=DOMAIN, unique_id=ADDRESS, title="Powerpal 00002ba7").add_to_hass(hass)

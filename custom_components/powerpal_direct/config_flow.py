@@ -349,6 +349,9 @@ class PowerpalConfigFlow(ConfigFlow, domain=DOMAIN):
         except (BleakError, TimeoutError, protocol.PowerpalProtocolError) as err:
             _LOGGER.debug("Couldn't connect: %s", err)
             errors["base"] = "cannot_connect"
+        except Exception:  # the form must come back with a message, not a stack trace
+            _LOGGER.exception("Unexpected error while pairing with %s", self._discovery.address)
+            errors["base"] = "unknown"
         return None
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:

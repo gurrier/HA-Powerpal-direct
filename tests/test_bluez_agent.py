@@ -91,6 +91,24 @@ async def test_registration_refused_still_lets_the_connection_go_ahead() -> None
     bus.disconnect.assert_called_once()
 
 
+async def test_a_broken_bus_connection_still_lets_the_connection_go_ahead(caplog: pytest.LogCaptureFixture) -> None:
+    """Reported from a container whose AppArmor policy blocks the system bus: connect() works,
+    the first call fails with EBADF, and the config flow used to crash with 'Unknown error'."""
+    bus = MagicMock()
+    bus.call = AsyncMock(side_effect=OSError(9, "Bad file descriptor"))
+    bus.disconnect = MagicMock(side_effect=BrokenPipeError())
+    bluez_agent._warned = False
+    with patch.object(bluez_agent, "_connect_system_bus", AsyncMock(return_value=bus)):
+        async with bluez_agent.pairing_agent(ADDRESS, PAIRING_CODE) as registered:
+            assert not registered
+        assert "Couldn't register a Bluetooth pairing agent (OSError" in caplog.text
+        caplog.clear()
+        # Said once at warning level; every reconnection after that keeps quiet.
+        async with bluez_agent.pairing_agent(ADDRESS, PAIRING_CODE) as registered:
+            assert not registered
+        assert "Couldn't register" not in [r.message for r in caplog.records if r.levelname == "WARNING"]
+
+
 async def test_no_system_bus_is_a_no_op() -> None:
     with patch.object(bluez_agent, "_connect_system_bus", AsyncMock(return_value=None)):
         async with bluez_agent.pairing_agent(ADDRESS, PAIRING_CODE) as registered:

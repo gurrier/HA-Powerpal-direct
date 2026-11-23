@@ -51,7 +51,8 @@
       "invalid_pairing_code": "The pairing code is 6 digits.",
       "not_advertising": "The Powerpal isn't advertising, so something else is probably connected to it.",
       "cannot_bond": "Couldn't bond with the Powerpal over Bluetooth. Bonding is most reliable through an ESPHome Bluetooth proxy (the same pairing an ESP32 gateway did). On a local adapter, a failed attempt can leave a stale record behind: remove the Powerpal from the host's Bluetooth before retrying.",
-      "gateway_still_connected": "The Powerpal hasn't started advertising, so something still holds its connection. Power the ESP32 off, wait half a minute, and try again."
+      "gateway_still_connected": "The Powerpal hasn't started advertising, so something still holds its connection. Power the ESP32 off, wait half a minute, and try again.",
+      "unknown": "Something unexpected went wrong while pairing. The log has the details; please report them at the issue tracker."
     },
     "abort": {
       "already_configured": "This Powerpal is already set up.",

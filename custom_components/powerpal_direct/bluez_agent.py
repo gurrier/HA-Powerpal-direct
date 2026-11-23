@@ -134,8 +134,16 @@ async def pairing_agent(address: str, passkey: int) -> AsyncIterator[bool]:
         yield registered
 
 
+# Whether the "couldn't register" warning has been given. Once is enough: on a host whose
+# system D-Bus is off limits (an AppArmor-confined container, say) every connection would
+# repeat it, and bonding through an ESPHome proxy doesn't need the agent anyway.
+_warned = False
+
+
 @contextlib.asynccontextmanager
 async def _registered(address: str, passkey: int) -> AsyncIterator[bool]:
+    """Register the agent if the system bus allows; never let a bus problem stop a connection."""
+    global _warned
     bus = await _connect_system_bus()
     if bus is None:
         yield False
@@ -143,22 +151,37 @@ async def _registered(address: str, passkey: int) -> AsyncIterator[bool]:
 
     registered = False
     try:
-        bus.export(AGENT_PATH, _make_agent(address, passkey))
         try:
+            bus.export(AGENT_PATH, _make_agent(address, passkey))
             await _call(bus, "RegisterAgent", "os", [AGENT_PATH, CAPABILITY])
             registered = True
             await _call(bus, "RequestDefaultAgent", "o", [AGENT_PATH])
             _LOGGER.debug("%s: Pairing agent registered (%s)", address, CAPABILITY)
-        except RuntimeError as err:
-            _LOGGER.warning("%s: Couldn't register a Bluetooth pairing agent: %s", address, err)
+        except Exception as err:  # a bus that fails in any way is simply unavailable
+            # RuntimeError from a BlueZ refusal; OSError, BrokenPipeError or a dbus-fast error
+            # when the bus connection itself is unusable, which AppArmor can cause after
+            # connect() has succeeded.
+            level = logging.DEBUG if _warned else logging.WARNING
+            _warned = True
+            _LOGGER.log(
+                level,
+                "%s: Couldn't register a Bluetooth pairing agent (%s: %s). Bonding through a local "
+                "adapter may fail; an ESPHome Bluetooth proxy bonds without it",
+                address,
+                type(err).__name__,
+                err,
+            )
         yield registered
     finally:
         if registered:
             try:
                 await _call(bus, "UnregisterAgent", "o", [AGENT_PATH])
-            except RuntimeError as err:
+            except Exception as err:
                 _LOGGER.debug("%s: Unregistering the pairing agent failed: %s", address, err)
-        bus.disconnect()
+        try:
+            bus.disconnect()
+        except Exception as err:
+            _LOGGER.debug("%s: Closing the system bus failed: %s", address, err)
 
 
 async def _connect_system_bus():
