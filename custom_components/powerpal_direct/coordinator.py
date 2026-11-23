@@ -792,11 +792,21 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._flush_pending_live()
 
         # The Powerpal may be about to send the rest itself; they count as they arrive.
-        # The verdict waits for that (see _check_pending_gap), with a deadline.
-        self._conclude_pending_gap()
+        # The verdict waits for that (see _check_pending_gap), with a deadline. A catch-up
+        # for the same gap on a remade connection (the Powerpal drops the first one or two
+        # after a restart) joins the verdict already pending rather than failing it.
         gap = PendingGap(start, end, expected, first_wanted, len(records), counted, unrecoverable)
+        if (pending := self._pending_gap) is not None:
+            if pending.cancel_deadline is not None:
+                pending.cancel_deadline()
+            gap.first_wanted = min(pending.first_wanted, first_wanted)
+            gap.expected = max(0, round((last_wanted - gap.first_wanted) / RECORD_INTERVAL_S))
+            gap.start = min(pending.start, start)
+            gap.received += pending.received
+            gap.counted += pending.counted
+            gap.unrecoverable = max(pending.unrecoverable, unrecoverable)
         self._pending_gap = gap
-        if self._gap_filled(gap) >= expected:
+        if self._gap_filled(gap) >= gap.expected:
             self._conclude_pending_gap()
         else:
             gap.cancel_deadline = async_call_later(self.hass, CATCH_UP_PUSH_GRACE_S, self._on_gap_deadline)
