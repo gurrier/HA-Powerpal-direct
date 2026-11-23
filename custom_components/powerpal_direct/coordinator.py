@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
@@ -91,9 +92,10 @@ MAX_POWER_INTERVAL_S = 300
 HISTORY_IDLE_TIMEOUT_S = 15
 HISTORY_MIN_RATE = 10  # records/s, for the overall timeout
 # On reconnecting, the Powerpal often sends the readings it couldn't deliver by itself,
-# sometimes only after a replay request for them has come back empty. Give it this long
-# before calling the gap unfilled.
-CATCH_UP_PUSH_GRACE_S = 5
+# sometimes only after a replay request for them has come back empty: it sends them just
+# ahead of its next live reading, up to a minute later. Wait that long, plus the clock
+# offset it can carry, before calling the gap unfilled.
+CATCH_UP_PUSH_GRACE_S = 90
 
 
 @dataclass(slots=True)
@@ -168,6 +170,8 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
         self._history_done = asyncio.Event()
         self._history_last_arrival = 0.0
         self._pending_live: list[Measurement] = []
+        # Set on every reading, for whoever is waiting to see whether a gap gets filled.
+        self._reading_arrived = asyncio.Event()
         self._last_record_arrival: float | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._stopping = False
@@ -776,9 +780,14 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
                 return 0
             return max(0, min(expected, round((watermark - first_wanted) / RECORD_INTERVAL_S)))
 
-        if filled() < expected and client.is_connected:
-            # The Powerpal may be about to send them itself; they count as they arrive.
-            await asyncio.sleep(CATCH_UP_PUSH_GRACE_S)
+        deadline = time.monotonic() + CATCH_UP_PUSH_GRACE_S
+        while filled() < expected and client.is_connected and (left := deadline - time.monotonic()) > 0:
+            # The Powerpal may be about to send them itself; they count as they arrive, so
+            # look again whenever a reading comes in.
+            self._reading_arrived.clear()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._reading_arrived.wait(), left)
+            await asyncio.sleep(0)
         got = filled()
         self.data.last_catch_up = CatchUpResult(
             requested_start=start,
@@ -871,6 +880,7 @@ class PowerpalCoordinator(DataUpdateCoordinator[PowerpalData]):
     @callback
     def _on_measurement(self, measurement: Measurement) -> None:
         self._last_record_arrival = time.monotonic()
+        self._reading_arrived.set()
         if (window := self._history_window) is not None:
             if measurement.timestamp <= window[1]:
                 self._history_records.append(measurement)

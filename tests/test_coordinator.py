@@ -306,7 +306,7 @@ async def test_readings_the_powerpal_sends_on_its_own_fill_the_gap(
     coordinator._client = client
     with (
         patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03),
-        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 0.6),
+        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 3),
         caplog.at_level(logging.INFO),
     ):
         await coordinator._async_catch_up(client, None)
@@ -315,6 +315,8 @@ async def test_readings_the_powerpal_sends_on_its_own_fill_the_gap(
     assert result is not None and (result.expected, result.received, result.filled) == (4, 0, 4)
     assert coordinator.energy.watermark == T0 - 60
     assert "Caught up only" not in caplog.text
+    # It stopped waiting once the readings had arrived, well before the grace ran out.
+    assert result.finished_at < dt_util.utcnow() and (dt_util.utcnow() - result.finished_at).total_seconds() < 2
     assert "4 sent by the Powerpal on its own" in caplog.text
 
 
