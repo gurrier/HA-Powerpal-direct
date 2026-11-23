@@ -306,18 +306,47 @@ async def test_readings_the_powerpal_sends_on_its_own_fill_the_gap(
     coordinator._client = client
     with (
         patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03),
-        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 3),
+        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 5),
         caplog.at_level(logging.INFO),
     ):
         await coordinator._async_catch_up(client, None)
+        # The replay came back empty, but no verdict yet: the readings may still come.
+        assert coordinator.data.last_catch_up is None
+        assert "Caught up" not in caplog.text
+        await until(lambda: coordinator.data.last_catch_up is not None, 3)
 
     result = coordinator.data.last_catch_up
-    assert result is not None and (result.expected, result.received, result.filled) == (4, 0, 4)
+    assert (result.expected, result.received, result.filled) == (4, 0, 4)
     assert coordinator.energy.watermark == T0 - 60
     assert "Caught up only" not in caplog.text
-    # It stopped waiting once the readings had arrived, well before the grace ran out.
-    assert result.finished_at < dt_util.utcnow() and (dt_util.utcnow() - result.finished_at).total_seconds() < 2
     assert "4 sent by the Powerpal on its own" in caplog.text
+
+
+async def test_a_gap_still_open_at_the_deadline_is_a_warning(
+    hass: HomeAssistant, device: FakePowerpal, caplog: pytest.LogCaptureFixture
+) -> None:
+    coordinator = make_coordinator(hass, poll_interval=15)
+    coordinator.energy.state = EnergyState(watermark=T0 - 300)
+    client = FakeClient(BLE_DEVICE, PAIRING_CODE)
+
+    async def replay_nothing(start: int, end: int) -> None:
+        device.history_requests.append((start, end))
+
+    client.request_history = replay_nothing  # type: ignore[method-assign]
+    await client.connect()
+    await client.subscribe(coordinator._on_measurement, MagicMock())
+    coordinator._client = client
+    with (
+        patch(f"{COORDINATOR}.HISTORY_IDLE_TIMEOUT_S", 0.03),
+        patch(f"{COORDINATOR}.CATCH_UP_PUSH_GRACE_S", 0.3),
+        caplog.at_level(logging.INFO),
+    ):
+        await coordinator._async_catch_up(client, None)
+        assert coordinator.data.last_catch_up is None
+        await until(lambda: coordinator.data.last_catch_up is not None, 3)
+    result = coordinator.data.last_catch_up
+    assert (result.expected, result.received, result.filled) == (4, 0, 0)
+    assert "Caught up only 0 of 4" in caplog.text
 
 
 async def test_unplanned_drop_is_reported_as_last_stall(hass: HomeAssistant, device: FakePowerpal) -> None:
