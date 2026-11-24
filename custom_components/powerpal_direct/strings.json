@@ -3,14 +3,14 @@
     "flow_title": "{name}",
     "step": {
       "user": {
-        "description": "Choose your Powerpal. If it isn't listed, something else is probably connected to it (an ESP32 gateway or the Powerpal app): a connected Powerpal stops advertising. Disconnect that first.",
+        "description": "Choose your Powerpal. If it isn't listed, something else is probably connected to it (an ESP32 gateway, or the Powerpal app on a phone without Remote Connection turned on under Settings → Manage): a connected Powerpal stops advertising. Disconnect that first.",
         "data": {
           "address": "Device"
         }
       },
       "pair": {
         "title": "Pair with {name}",
-        "description": "Home Assistant will bond with the Powerpal over Bluetooth and authenticate with its pairing code. Make sure nothing else (an ESP32 gateway or the Powerpal app) is connected to it.{gateway_note}",
+        "description": "Home Assistant will bond with the Powerpal over Bluetooth and authenticate with its pairing code. Make sure nothing else is connected to it: turn any ESP32 gateway off, and in the Powerpal app turn on Remote Connection (Settings → Manage) so the phone doesn't take the Powerpal back.{gateway_note}",
         "data": {
           "pairing_code": "Pairing code",
           "pulses_per_kwh": "Meter pulses per kWh"
@@ -57,7 +57,7 @@
     "abort": {
       "already_configured": "This Powerpal is already set up.",
       "all_configured": "{names} is already set up and connected to Home Assistant, so it isn't advertising and nothing new was found. To change its pairing code, use Reconfigure on the existing entry. To add a second Powerpal, make sure that one is advertising: nothing else connected to it.",
-      "no_devices_found": "No Powerpal found. A Powerpal stops advertising while anything is connected to it, so turn off any ESP32 gateway and close the Powerpal app, then try again.",
+      "no_devices_found": "No Powerpal found. A Powerpal stops advertising while anything is connected to it, so turn off any ESP32 gateway, turn on Remote Connection in the Powerpal app (Settings → Manage) so the phone lets go, then try again.",
       "reauth_successful": "The pairing code was updated.",
       "reconfigure_successful": "The pairing code was updated."
     }

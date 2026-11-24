@@ -22,7 +22,9 @@ the history protocol worked out in
 - Bluetooth in range of the Powerpal: the Home Assistant host's own adapter, or an ESPHome
   Bluetooth proxy with `active: true`. Both can bond (see [Bonding](#bonding)).
 
-**Turn off the ESP32 gateway first** (and close the Powerpal app). The Powerpal accepts one
+**Turn off the ESP32 gateway first**, and in the Powerpal app turn on **Remote Connection**
+(Settings → Manage), which stops the phone connecting to the Powerpal itself and shows the
+cloud's data instead. The Powerpal accepts one
 connection at a time and stops advertising while anything holds it, so Home Assistant
 won't even see it until it's free.
 
